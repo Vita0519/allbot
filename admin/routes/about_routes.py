@@ -2,6 +2,7 @@
 关于页面路由：负责处理关于页面的请求和转换Markdown为HTML
 """
 import os
+import re
 import logging
 from pathlib import Path
 from fastapi import APIRouter, Request, Depends, HTTPException, Response
@@ -29,7 +30,7 @@ def convert_markdown_to_html(markdown_content):
     """将Markdown内容转换为HTML"""
     if has_markdown:
         # 使用markdown库进行转换，启用额外功能
-        return markdown.markdown(
+        html_content = markdown.markdown(
             markdown_content,
             extensions=[
                 'markdown.extensions.extra',
@@ -43,7 +44,13 @@ def convert_markdown_to_html(markdown_content):
         html_content = markdown_content.replace('\n\n', '</p><p>')
         html_content = f"<p>{html_content}</p>"
         html_content = html_content.replace('\n', '<br>')
-        return html_content
+    
+    # 将Markdown中的相对路径转换为Web应用可访问的路径
+    # 将 src="admin/static/ 替换为 src="/static/
+    # 将 href="admin/static/ 替换为 href="/static/
+    html_content = re.sub(r'(src|href)="admin/static/', r'\1="/static/', html_content)
+    
+    return html_content
 
 def read_markdown_file(file_path):
     """读取Markdown文件内容"""
