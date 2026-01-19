@@ -151,8 +151,92 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
+# API 标签分组定义
+tags_metadata = [
+    {
+        "name": "系统",
+        "description": "系统监控、状态、日志等相关接口",
+    },
+    {
+        "name": "插件",
+        "description": "插件管理、配置、启用/禁用等操作",
+    },
+    {
+        "name": "账号",
+        "description": "微信账号管理、切换、登录/登出",
+    },
+    {
+        "name": "文件",
+        "description": "文件上传、下载、删除、列表查看",
+    },
+    {
+        "name": "联系人",
+        "description": "好友、群组管理与查询",
+    },
+    {
+        "name": "朋友圈",
+        "description": "朋友圈列表、点赞、评论等操作",
+    },
+    {
+        "name": "提醒",
+        "description": "定时提醒的增删改查",
+    },
+    {
+        "name": "适配器",
+        "description": "多平台适配器管理（QQ/Telegram/Web/Windows）",
+    },
+    {
+        "name": "AI平台",
+        "description": "AI 模型平台配置与密钥管理",
+    },
+]
+
 # 全局变量
-app = FastAPI(title="XYBotV2管理后台")
+app = FastAPI(
+    title="AllBot 智能微信机器人管理后台",
+    description="""
+## AllBot 管理后台 API 文档
+
+基于 FastAPI 构建的 AllBot 可视化管理平台，提供完整的机器人管理功能。
+
+### 主要功能模块
+
+* **系统监控**：实时查看 CPU、内存、磁盘使用情况
+* **插件管理**：安装、卸载、启用、禁用、配置插件（支持 56+ 插件）
+* **账号管理**：多微信账号绑定与切换
+* **文件管理**：上传、下载、删除机器人使用的文件
+* **联系人管理**：好友、群组列表查看与搜索
+* **朋友圈管理**：查看、点赞、评论朋友圈
+* **提醒管理**：定时提醒的增删改查
+* **适配器管理**：多平台适配器状态查看（QQ/Telegram/Web/Windows）
+* **AI 平台管理**：配置各类 AI 模型平台的密钥
+
+### 认证说明
+
+所有 API 需要通过 HTTP Basic Auth 或 Session 认证。
+
+### 技术栈
+
+- **框架**：FastAPI + Uvicorn
+- **模板引擎**：Jinja2
+- **数据库**：SQLite (aiosqlite)
+- **缓存**：Redis
+- **日志**：Loguru
+    """,
+    version="1.0.0",
+    openapi_tags=tags_metadata,
+    docs_url="/docs",  # Swagger UI 路径
+    redoc_url="/redoc",  # ReDoc 路径
+    openapi_url="/openapi.json",  # OpenAPI Schema 路径
+    contact={
+        "name": "AllBot 开发团队",
+        "url": "https://github.com/yourusername/allbot",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+)
 security = HTTPBasic()
 templates = None
 bot_instance = None

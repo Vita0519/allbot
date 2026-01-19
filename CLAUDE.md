@@ -1,0 +1,370 @@
+# AllBot - 智能微信机器人系统
+
+> **本文档为 AI 辅助开发优化而设计**
+> 最后更新：2026-01-18 20:57:24
+
+---
+
+## 📋 变更记录 (Changelog)
+
+### 2026-01-18 20:57:24 - 初始化 AI 上下文文档
+- 创建根级 CLAUDE.md 及模块级文档
+- 完成项目结构扫描与架构分析
+- 建立模块索引与导航体系
+
+---
+
+## 🎯 项目愿景
+
+AllBot 是一个**基于微信协议的智能机器人系统**，通过插件化架构和多平台适配器设计，提供了以下核心能力：
+
+- **智能对话**：集成多种 AI 平台（Dify、OpenAI、FastGPT、SiliconFlow 等）
+- **插件生态**：56+ 功能插件，覆盖娱乐、工具、电商、文件处理等领域
+- **多协议支持**：支持 pad/ipad/mac/ipad2/car/win 等多种微信协议版本
+- **管理后台**：基于 FastAPI + Bootstrap 5 的 Web 管理界面
+- **容器化部署**：Docker + Docker Compose 开箱即用
+
+**设计哲学**：通过事件驱动的插件系统与优先级调度机制，实现灵活、可扩展、高可维护性的机器人服务。
+
+---
+
+## 🏗️ 架构总览
+
+### 技术栈
+
+| 层级 | 技术选型 |
+|------|----------|
+| **语言** | Python 3.11+ |
+| **Web 框架** | FastAPI + Uvicorn |
+| **数据库** | SQLite (aiosqlite) + SQLAlchemy ORM |
+| **缓存** | Redis (aioredis) |
+| **消息队列** | RabbitMQ (可选，aio_pika) |
+| **任务调度** | APScheduler (AsyncIOScheduler) |
+| **日志系统** | Loguru |
+| **前端** | Bootstrap 5 + Chart.js + AOS 动画库 |
+| **容器化** | Docker + Docker Compose |
+| **微信协议** | xywechatpad-binary (多版本支持) |
+
+### 核心架构原则
+
+- **SOLID**：单一职责、开闭原则、依赖倒置
+- **DRY**：代码复用通过 `utils/` 模块与基类实现
+- **KISS**：插件通过装饰器快速开发，降低心智负担
+- **YAGNI**：功能通过插件按需启用，核心保持精简
+
+### 系统分层
+
+```
+┌─────────────────────────────────────────┐
+│        Web 管理后台 (FastAPI)           │
+│    - 插件管理 - 文件管理 - 监控面板      │
+├─────────────────────────────────────────┤
+│       适配器层 (Adapter Layer)          │
+│  QQ | Telegram | Web | Windows         │
+├─────────────────────────────────────────┤
+│        核心调度 (bot_core.py)           │
+│  - 消息路由 - 事件分发 - 优先级队列      │
+├─────────────────────────────────────────┤
+│       插件系统 (Plugin System)          │
+│  56+ 插件 | 装饰器驱动 | 热加载支持      │
+├─────────────────────────────────────────┤
+│     WechatAPI 客户端 (封装层)           │
+│  好友 | 群聊 | 朋友圈 | 红包 | 登录      │
+├─────────────────────────────────────────┤
+│      数据持久化 (Database Layer)        │
+│  SQLite | Redis | KeyvalDB | MessageDB │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 📊 模块结构图
+
+```mermaid
+graph TD
+    A["(根) AllBot 项目"] --> B["核心模块"];
+    A --> C["插件系统"];
+    A --> D["管理后台"];
+    A --> E["适配器层"];
+    A --> F["基础设施"];
+
+    B --> B1["bot_core.py<br/>核心调度引擎"];
+    B --> B2["main.py<br/>程序入口"];
+    B --> B3["WechatAPI/<br/>微信客户端封装"];
+
+    C --> C1["plugins/<br/>56+ 功能插件"];
+    C --> C2["utils/plugin_manager<br/>插件管理器"];
+    C --> C3["utils/plugin_base<br/>插件基类"];
+
+    D --> D1["admin/server.py<br/>FastAPI 后台"];
+    D --> D2["admin/static/<br/>前端资源"];
+    D --> D3["admin/routes/<br/>API 路由"];
+
+    E --> E1["adapter/qq<br/>QQ 适配器"];
+    E --> E2["adapter/tg<br/>Telegram 适配器"];
+    E --> E3["adapter/web<br/>Web 适配器"];
+    E --> E4["adapter/win<br/>Windows 适配器"];
+
+    F --> F1["database/<br/>数据层"];
+    F --> F2["utils/<br/>工具模块"];
+    F --> F3["Docker<br/>容器化"];
+
+    click B1 "./CLAUDE.md#核心调度引擎" "查看核心调度文档"
+    click C1 "./plugins/CLAUDE.md" "查看插件系统文档"
+    click D1 "./admin/CLAUDE.md" "查看管理后台文档"
+    click E1 "./adapter/CLAUDE.md" "查看适配器文档"
+    click F1 "./database/CLAUDE.md" "查看数据层文档"
+    click F2 "./utils/CLAUDE.md" "查看工具模块文档"
+    click B3 "./WechatAPI/CLAUDE.md" "查看 WechatAPI 文档"
+```
+
+---
+
+## 📚 模块索引
+
+| 模块路径 | 职责 | 入口文件 | 文档链接 |
+|---------|------|----------|---------|
+| **核心引擎** | 消息调度、事件分发、插件协调 | `bot_core.py` | [详细文档](./bot_core/CLAUDE.md) |
+| **主程序** | 启动流程、配置管理、监控重启 | `main.py` | - |
+| **WechatAPI/** | 微信协议封装（好友/群聊/朋友圈） | `WechatAPI/__init__.py` | [详细文档](./WechatAPI/CLAUDE.md) |
+| **plugins/** | 56+ 功能插件（AI/游戏/工具/电商） | 各插件 `main.py` | [详细文档](./plugins/CLAUDE.md) |
+| **admin/** | Web 管理后台（FastAPI） | `admin/run_server.py` | [详细文档](./admin/CLAUDE.md) |
+| **adapter/** | 多平台适配器（QQ/TG/Web/Win） | `adapter/loader.py` | [详细文档](./adapter/CLAUDE.md) |
+| **database/** | 数据持久化（SQLite/Redis） | `database/__init__.py` | [详细文档](./database/CLAUDE.md) |
+| **utils/** | 工具函数库（装饰器/日志/性能监控） | `utils/*.py` | [详细文档](./utils/CLAUDE.md) |
+| **docs/** | 用户手册与开发指南 | `docs/*.md` | - |
+| **Docker** | 容器化部署配置 | `Dockerfile`, `docker-compose.yml` | - |
+
+---
+
+## 🚀 运行与开发
+
+### 快速启动（Docker 推荐）
+
+```bash
+# 使用官方镜像
+docker-compose up -d
+
+# 访问管理后台
+http://localhost:9090
+```
+
+### 本地开发
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 配置文件
+cp main_config.template.toml main_config.toml
+# 编辑 main_config.toml，设置管理员、协议版本等
+
+# 3. 启动 Redis
+redis-server
+
+# 4. 启动主程序
+python main.py
+```
+
+### 环境要求
+
+- Python 3.11+
+- Redis 5.0+
+- FFmpeg（语音处理）
+- Docker（可选，用于容器化）
+
+---
+
+## 🧪 测试策略
+
+**当前状态**：项目暂无独立的测试目录（未检测到 `tests/` 目录）。
+
+**建议**：
+- 为核心模块（`bot_core.py`, `plugin_manager.py`）添加单元测试
+- 使用 `pytest` + `pytest-asyncio` 测试异步逻辑
+- 插件开发时编写示例测试用例（参考 `ExamplePlugin`）
+
+---
+
+## 📐 编码规范
+
+### 代码风格
+
+项目使用 `pyproject.toml` 定义的格式化工具：
+
+- **Black**：代码格式化（行长度 100）
+- **isort**：导入排序（profile=black）
+- **flake8**：代码检查
+- **mypy**：类型检查（渐进式，当前未强制）
+
+**建议命令**：
+```bash
+# 格式化代码
+black .
+
+# 排序导入
+isort .
+
+# 类型检查
+mypy .
+```
+
+### 插件开发规范
+
+参考 `docs/插件开发指南.md`，关键原则：
+
+1. **继承 `PluginBase`**：所有插件必须继承 `utils/plugin_base.py`
+2. **使用装饰器**：通过 `@on_text_message(priority=N)` 注册事件处理器
+3. **优先级控制**：0-99，值越高越优先（默认 50）
+4. **配置文件**：`config.toml` 必须包含 `[basic] enable = true/false`
+5. **元数据**：设置 `description`, `author`, `version` 属性
+
+**示例**：
+```python
+from utils.plugin_base import PluginBase
+from utils.decorators import on_text_message
+
+class MyPlugin(PluginBase):
+    description = "我的插件"
+    author = "作者名"
+    version = "1.0.0"
+
+    @on_text_message(priority=80)
+    async def handle_text(self, bot, message: dict):
+        # 处理逻辑
+        pass
+```
+
+---
+
+## 🤖 AI 使用指引
+
+### 高频操作场景
+
+#### 1. 添加新插件
+**路径**：`plugins/YourPlugin/`
+**参考**：`plugins/ExamplePlugin/` 或 `plugins/BotStatus/`
+**关键文件**：
+- `__init__.py`（导出插件类）
+- `main.py`（插件逻辑）
+- `config.toml`（配置项）
+- `README.md`（功能说明）
+
+#### 2. 修改核心调度逻辑
+**路径**：`bot_core.py`
+**注意事项**：
+- 阅读现有消息分发逻辑（`ReplyRouter`, `EventManager`）
+- 避免破坏优先级队列机制
+- 测试多插件并发场景
+
+#### 3. 扩展 WechatAPI 功能
+**路径**：`WechatAPI/Client/`
+**模块划分**：
+- `friend.py`：好友相关
+- `chatroom.py`：群聊相关
+- `pyq.py`：朋友圈相关
+- `hongbao.py`：红包相关
+- `login.py`：登录认证
+
+#### 4. 管理后台新增功能
+**路径**：`admin/routes/`
+**技术栈**：
+- 后端：FastAPI 路由 + Jinja2 模板
+- 前端：Bootstrap 5 + Vue 3（部分页面）
+- API 规范：RESTful 风格
+
+### 关键设计模式
+
+| 模式 | 应用位置 | 作用 |
+|------|---------|------|
+| **单例模式** | `database/XYBotDB.py` | 全局唯一数据库连接 |
+| **装饰器模式** | `utils/decorators.py` | 事件处理器注册 |
+| **工厂模式** | `utils/plugin_manager.py` | 插件动态加载 |
+| **观察者模式** | `utils/event_manager.py` | 事件发布/订阅 |
+| **策略模式** | `adapter/loader.py` | 多平台适配器切换 |
+
+### 性能优化建议
+
+- **异步优先**：所有 I/O 操作使用 `async/await`
+- **数据库连接池**：通过 `ThreadPoolExecutor` 避免阻塞
+- **Redis 缓存**：热点数据（联系人列表、配置）使用 Redis
+- **消息队列**：高并发场景启用 RabbitMQ（配置 `enable-rabbitmq = true`）
+
+---
+
+## 🔍 常见开发问题
+
+### Q1: 如何调试插件不生效？
+1. 检查 `config.toml` 中 `enable = true`
+2. 查看 `main_config.toml` 中是否在 `disabled-plugins` 列表
+3. 查看日志文件 `logs/allbot_*.log` 中的插件加载信息
+4. 确认装饰器优先级未被其他插件覆盖
+
+### Q2: 如何添加新的微信协议版本？
+1. 在 `WechatAPI/Client/` 中扩展协议适配逻辑
+2. 修改 `main_config.toml` 中 `[Protocol] version` 配置
+3. 确保协议服务端（如 XYWechatPad）已部署并配置正确
+
+### Q3: 数据库迁移怎么处理？
+当前使用 SQLAlchemy 的 `create_all()` 自动建表，不支持复杂迁移。
+**建议**：使用 Alembic 进行版本化迁移管理（未集成，需手动添加）。
+
+### Q4: 如何实现定时任务？
+使用 `@schedule` 装饰器（基于 APScheduler）：
+```python
+from utils.decorators import schedule
+
+@schedule('cron', hour=8, minute=0)
+async def morning_task(self, bot):
+    # 每天早上 8:00 执行
+    pass
+```
+
+---
+
+## 📦 依赖管理
+
+核心依赖（见 `pyproject.toml` 和 `requirements.txt`）：
+
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| fastapi | ~0.110.0 | Web 框架 |
+| uvicorn | ~0.30.0 | ASGI 服务器 |
+| loguru | ~0.7.3 | 日志系统 |
+| SQLAlchemy | ~2.0.37 | ORM |
+| aiosqlite | ~0.20.0 | 异步 SQLite |
+| APScheduler | ~3.11.0 | 任务调度 |
+| redis | >=4.2.0 | Redis 客户端 |
+| aio_pika | >=9.0.0 | RabbitMQ 客户端 |
+| pillow | ~10.4.0 | 图片处理 |
+| pydantic | ~2.10.5 | 数据验证 |
+
+**插件额外依赖**：部分插件有独立的 `requirements.txt`（如 `plugins/APIInterface/requirements.txt`）。
+
+---
+
+## 🎓 学习路径（新手向）
+
+1. **从示例插件开始**：阅读 `plugins/ExamplePlugin/` 和 `plugins/BotStatus/`
+2. **理解装饰器机制**：`utils/decorators.py` + `utils/event_manager.py`
+3. **掌握数据持久化**：`database/XYBotDB.py` 的 CRUD 操作
+4. **深入核心调度**：`bot_core.py` 的消息处理流程
+5. **扩展前端界面**：`admin/templates/` + `admin/static/`
+
+---
+
+## 📞 技术支持
+
+- **GitHub**：[https://github.com/sxkiss/allbot](https://github.com/sxkiss/allbot)
+- **Telegram 交流群**：[https://t.me/+--ToAPQBj-Q2YjM1](https://t.me/+--ToAPQBj-Q2YjM1)
+- **文档中心**：`docs/` 目录下的详细手册
+
+---
+
+## ⚠️ 免责声明
+
+本项目仅供学习交流使用，严禁用于商业用途。使用本项目所产生的一切法律责任和风险，由使用者自行承担，与项目作者无关。请遵守相关法律法规，合法合规使用本项目。
+
+---
+
+**构建者提示**：本文档基于 AI 自动扫描生成，如有遗漏或错误，请参考各模块的独立 `CLAUDE.md` 文件或源代码注释。
