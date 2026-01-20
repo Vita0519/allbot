@@ -7,7 +7,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./:/app
+      - ./:/app # 本地开发：挂载整个目录
       - redis_data:/data/redis
 
 volumes:

@@ -43,19 +43,34 @@ async def require_auth(request: Request) -> str:
         HTTPException: 认证失败时抛出 401 错误
     """
     if _check_auth_func is None:
+        # 记录详细错误信息
+        import traceback
+        from loguru import logger
+        logger.error("认证系统未初始化！调用栈：")
+        logger.error(traceback.format_stack())
         raise HTTPException(
             status_code=500,
             detail="认证系统未初始化"
         )
 
-    username = await _check_auth_func(request)
-    if not username:
+    try:
+        username = await _check_auth_func(request)
+        if not username:
+            raise HTTPException(
+                status_code=401,
+                detail="未认证"
+            )
+        return username
+    except HTTPException:
+        raise
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"认证检查时发生异常: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(
-            status_code=401,
-            detail="未认证"
+            status_code=500,
+            detail=f"认证检查失败: {str(e)}"
         )
-
-    return username
 
 
 async def optional_auth(request: Request) -> Optional[str]:
@@ -107,6 +122,15 @@ async def require_auth_page(request: Request) -> Optional[str]:
         Optional[str]: 认证成功返回用户名，否则返回 None
     """
     if _check_auth_func is None:
+        from loguru import logger
+        logger.warning("认证系统未初始化，页面认证检查返回 None")
         return None
 
-    return await _check_auth_func(request)
+    try:
+        return await _check_auth_func(request)
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"页面认证检查时发生异常: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None

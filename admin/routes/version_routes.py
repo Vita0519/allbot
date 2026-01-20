@@ -106,6 +106,7 @@ def register_version_routes(app, get_version_info, current_dir,
                     result["force_update"] = force_update
                     if force_update:
                         result["update_available"] = True
+                    result["success"] = True  # 添加 success 字段供前端判断
                     return result
                 else:
                     return {"success": False, "error": f"服务器返回错误状态码: {response.status_code}"}
@@ -127,6 +128,7 @@ def register_version_routes(app, get_version_info, current_dir,
                 except Exception as e:
                     logger.error(f"更新版本信息文件失败: {e}")
 
+            version_info["success"] = True  # 添加 success 字段供前端判断
             return version_info
 
         except Exception as e:

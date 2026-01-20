@@ -302,6 +302,10 @@ async def api_get_account_list(request: Request):
     """获取账号列表API"""
     # 检查认证状态
     try:
+        if check_auth is None:
+            logger.error("认证函数未初始化")
+            return JSONResponse(status_code=500, content={"success": False, "error": "认证系统未初始化"})
+
         username = await check_auth(request)
         if not username:
             logger.error("获取账号列表失败：未认证")
@@ -373,6 +377,10 @@ async def api_switch_account(wxid: str, request: Request):
     """切换账号API"""
     # 检查认证状态
     try:
+        if check_auth is None:
+            logger.error("认证函数未初始化")
+            return JSONResponse(status_code=500, content={"success": False, "error": "认证系统未初始化"})
+
         username = await check_auth(request)
         if not username:
             logger.error("切换账号失败：未认证")
@@ -608,6 +616,10 @@ async def api_refresh_account(wxid: str, request: Request):
     """刷新账号信息API"""
     # 检查认证状态
     try:
+        if check_auth is None:
+            logger.error("认证函数未初始化")
+            return JSONResponse(status_code=500, content={"success": False, "error": "认证系统未初始化"})
+
         username = await check_auth(request)
         if not username:
             logger.error("刷新账号信息失败：未认证")
@@ -678,6 +690,10 @@ async def api_delete_account(wxid: str, request: Request):
     """删除账号API"""
     # 检查认证状态
     try:
+        if check_auth is None:
+            logger.error("认证函数未初始化")
+            return JSONResponse(status_code=500, content={"success": False, "error": "认证系统未初始化"})
+
         username = await check_auth(request)
         if not username:
             logger.error("删除账号失败：未认证")
@@ -1115,6 +1131,10 @@ def register_account_manager_routes(app, auth_func, status_update_func=None, res
         """检查并更新账号列表API"""
         # 检查认证状态
         try:
+            if check_auth is None:
+                logger.error("认证函数未初始化")
+                return JSONResponse(status_code=500, content={"success": False, "error": "认证系统未初始化"})
+
             username = await check_auth(request)
             if not username:
                 logger.error("检查并更新账号列表失败：未认证")
@@ -1164,6 +1184,10 @@ def register_account_manager_routes(app, auth_func, status_update_func=None, res
     async def accounts_page(request: Request):
         # 检查认证状态
         try:
+            if check_auth is None:
+                logger.error("认证函数未初始化")
+                return RedirectResponse(url="/login?next=/accounts")
+
             username = await check_auth(request)
             if not username:
                 logger.debug("未找到会话 Cookie")
