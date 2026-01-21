@@ -52,11 +52,20 @@ async def restart_system():
         logger.info(f"是否在Docker环境中: {in_docker}")
 
         if in_docker:
-            # Docker环境下的重启策略：直接退出进程，触发Docker重启策略
-            logger.info("在Docker环境中运行，直接退出进程触发重启")
-            logger.info("Docker Compose配置的restart策略将自动重启容器")
-            # 使用非零退出码，触发Docker的restart: unless-stopped策略
-            os._exit(1)
+            # Docker环境下的重启策略：使用 execv 替换当前进程
+            logger.info("在Docker环境中运行，使用 execv 重启进程")
+
+            # 获取 Python 解释器路径和 main.py 路径
+            python_executable = sys.executable
+            main_py = "/app/main.py"
+
+            logger.info(f"重启命令: {python_executable} {main_py}")
+
+            # 等待一点时间让日志写入
+            await asyncio.sleep(0.5)
+
+            # 使用 execv 替换当前进程（不会退出容器）
+            os.execv(python_executable, [python_executable, main_py])
         else:
             # 非Docker环境下的重启策略
             # 获取当前脚本的路径和执行命令
