@@ -670,4 +670,14 @@ def register_web_chat_routes(app, check_auth):
     global _check_auth
     _check_auth = check_auth
     app.include_router(router)
-    logger.info("Web聊天API路由已注册")
+
+    # 预创建固定会话，确保启动时就能接收回复消息
+    _ensure_session(_FIXED_SESSION_ID)
+    logger.info("Web聊天API路由已注册，固定会话已创建")
+
+    # 处理启动前积累的历史回复消息
+    adapter = _get_web_adapter()
+    if adapter and adapter.enabled:
+        ingested = _ingest_pending_replies(adapter, limit=100)
+        if ingested > 0:
+            logger.success(f"✅ 已处理 {ingested} 条历史回复消息")
