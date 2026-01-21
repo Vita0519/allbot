@@ -102,7 +102,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         except Exception as e:
             logger.error(f"获取 AI 插件列表失败: {e}")
 
-        context = build_page_context(request, "ai_platforms", get_version_info(), ai_plugins=ai_plugins)
+        version_info = get_version_info()
+        context = build_page_context(request, "ai_platforms", version_info, ai_plugins=ai_plugins)
         return templates.TemplateResponse("ai_platforms.html", context)
 
 
@@ -117,8 +118,9 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         logger.info(f"用户 {username} 访问定时提醒页面")
 
         try:
+            version_info = get_version_info()
             context = build_page_context(
-                request, "reminders", get_version_info(),
+                request, "reminders", version_info,
                 username=username,
                 title="定时提醒",
                 current_page="reminders"
@@ -145,7 +147,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
                 bot_wxid = bot_instance.wxid
                 logger.debug(f"当前机器人 wxid: {bot_wxid}")
 
-            context = build_page_context(request, "friend_circle", get_version_info(), bot_wxid=bot_wxid)
+            version_info = get_version_info()
+            context = build_page_context(request, "friend_circle", version_info, bot_wxid=bot_wxid)
             return templates.TemplateResponse("friend_circle.html", context)
         except Exception as e:
             logger.error(f"朋友圈页面访问失败: {str(e)}")
@@ -159,7 +162,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "plugins", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "plugins", version_info)
         return templates.TemplateResponse("plugins.html", context)
 
 
@@ -170,7 +174,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "plugin_market", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "plugin_market", version_info)
         return templates.TemplateResponse("plugin_market.html", context)
 
 
@@ -181,7 +186,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "contacts", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "contacts", version_info)
         return templates.TemplateResponse("contacts.html", context)
 
 
@@ -192,7 +198,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "system", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "system", version_info)
         return templates.TemplateResponse("system.html", context)
 
 
@@ -203,7 +210,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "settings", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "settings", version_info)
         return templates.TemplateResponse("settings.html", context)
 
 
@@ -214,7 +222,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "adapters", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "adapters", version_info)
         return templates.TemplateResponse("adapters.html", context)
 
 
@@ -225,7 +234,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "webchat", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "webchat", version_info)
         return templates.TemplateResponse("webchat.html", context)
 
 
@@ -236,7 +246,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "files", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "files", version_info)
         return templates.TemplateResponse("files.html", context)
 
 
@@ -247,7 +258,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "github_proxy", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "github_proxy", version_info)
         return templates.TemplateResponse("github_proxy.html", context)
 
 
@@ -258,7 +270,8 @@ def register_page_routes(app, templates, bot_instance, get_version_info, get_sys
         if not username:
             return RedirectResponse(url="/login")
 
-        context = build_page_context(request, "notification", get_version_info())
+        version_info = get_version_info()
+        context = build_page_context(request, "notification", version_info)
         return templates.TemplateResponse("notification.html", context)
 
     logger.info("页面路由注册完成")

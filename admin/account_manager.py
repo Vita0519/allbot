@@ -1200,27 +1200,19 @@ def register_account_manager_routes(app, auth_func, status_update_func=None, res
         # 获取版本信息
         from admin.server import get_version_info
         version_info = get_version_info()
-        version = version_info.get("version", "1.0.0")
-        update_available = version_info.get("update_available", False)
-        latest_version = version_info.get("latest_version", "")
-        update_url = version_info.get("update_url", "")
-        update_description = version_info.get("update_description", "")
 
-        # 创建Jinja2Templates实例
-        templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "admin", "templates")
-        templates = Jinja2Templates(directory=templates_dir)
-
+        # 使用传入的 templates 实例，而不是重新创建
         # 返回账号管理页面
         return templates.TemplateResponse(
             "accounts.html",
             {
                 "request": request,
                 "active_page": "accounts",
-                "version": version,
-                "update_available": update_available,
-                "latest_version": latest_version,
-                "update_url": update_url,
-                "update_description": update_description
+                "version": version_info.get("version", "1.0.0"),
+                "update_available": version_info.get("update_available", False),
+                "latest_version": version_info.get("latest_version", ""),
+                "update_url": version_info.get("update_url", ""),
+                "update_description": version_info.get("update_description", "")
             }
         )
 
