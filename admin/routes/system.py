@@ -21,7 +21,7 @@ except ImportError:
         tomllib = None
 
 
-def register_system_routes(app, get_system_info, get_system_status, handle_system_stats, current_dir):
+def register_system_routes(app, get_system_info, get_system_status, handle_system_stats, current_dir, bot_instance=None, get_bot_status=None):
     """
     注册系统管理相关路由
 
@@ -31,8 +31,51 @@ def register_system_routes(app, get_system_info, get_system_status, handle_syste
         get_system_status: 获取系统状态函数
         handle_system_stats: 处理系统统计函数
         current_dir: 当前目录路径
+        bot_instance: Bot 实例（可选）
+        get_bot_status: 获取 Bot 状态函数（可选）
     """
-    from admin.utils import require_auth
+    from admin.utils import require_auth, optional_auth
+
+    @app.get("/api/bot/status", response_class=JSONResponse, tags=["系统"])
+    async def api_bot_status(request: Request):
+        """获取机器人状态（不需要认证）"""
+        try:
+            # 获取状态数据
+            if get_bot_status:
+                status_data = get_bot_status()
+            else:
+                # 如果没有提供 get_bot_status 函数，返回默认状态
+                status_data = {
+                    "status": "offline",
+                    "wxid": "",
+                    "nickname": "",
+                    "alias": ""
+                }
+
+            logger.debug(f"API获取bot状态: {status_data}")
+
+            # 添加bot实例的一些信息（如果可用）
+            if bot_instance and hasattr(bot_instance, 'wxid') and status_data.get("status") in ["online", "ready"]:
+                try:
+                    # 避免覆盖状态文件中已有的信息
+                    if not status_data.get("nickname"):
+                        status_data["nickname"] = getattr(bot_instance, "nickname", "")
+                    if not status_data.get("wxid"):
+                        status_data["wxid"] = getattr(bot_instance, "wxid", "")
+                    if not status_data.get("alias"):
+                        status_data["alias"] = getattr(bot_instance, "alias", "")
+                except Exception as e:
+                    logger.error(f"获取bot实例信息失败: {e}")
+            else:
+                # 确保状态数据中有个人信息字段(即使是空值)
+                for field in ["nickname", "wxid", "alias"]:
+                    if field not in status_data:
+                        status_data[field] = None
+
+            return {"success": True, "data": status_data}
+        except Exception as e:
+            logger.error(f"获取bot状态失败: {e}")
+            return {"success": False, "error": str(e)}
 
     @app.get("/api/system/status", response_class=JSONResponse, tags=["系统"])
     async def api_system_status(username: str = Depends(require_auth)):

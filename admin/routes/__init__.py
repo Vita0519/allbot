@@ -48,12 +48,18 @@ def register_refactored_routes(app, templates, bot_instance, get_version_info,
     if get_system_info and get_system_status and handle_system_stats and current_dir:
         try:
             from .system import register_system_routes
+
+            # 从 app.state 获取 get_bot_status 函数
+            get_bot_status_func = getattr(app.state, 'get_bot_status', None)
+
             register_system_routes(
                 app,
                 get_system_info,
                 get_system_status,
                 handle_system_stats,
-                current_dir
+                current_dir,
+                bot_instance=bot_instance,
+                get_bot_status=get_bot_status_func
             )
             logger.info("✓ 系统管理路由注册成功")
         except Exception as e:
