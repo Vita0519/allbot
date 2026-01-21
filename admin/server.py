@@ -24,7 +24,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 # 导入核心模块
-from core.app_setup import (
+from admin.core.app_setup import (
     create_app,
     load_config,
     set_log_level,
@@ -152,25 +152,27 @@ def setup_routes():
     global app
 
     # 从 core.app_setup 获取 templates（在 create_app() 后已初始化）
-    from core import app_setup
+    from admin.core import app_setup
     templates = app_setup.templates
 
     # 导入辅助函数（从 core.helpers 模块）
     try:
-        from core.helpers import (
+        from admin.core.helpers import (
             get_system_info,
             get_system_status,
             update_bot_status,
             restart_system
         )
-        from core.app_setup import get_version_info
-        from system_stats_api import handle_system_stats
+        from admin.core.app_setup import get_version_info
+        from admin.system_stats_api import handle_system_stats
 
         logger.info("✓ 辅助函数导入成功")
     except ImportError as e:
         logger.error(f"✗ 导入辅助函数失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         # 使用简化版本
-        from core.app_setup import get_version_info
+        from admin.core.app_setup import get_version_info
         get_system_info = None
         get_system_status = None
         handle_system_stats = None
@@ -182,7 +184,7 @@ def setup_routes():
 
     # 注册重构后的模块化路由
     try:
-        from routes import register_refactored_routes
+        from admin.routes import register_refactored_routes
         register_refactored_routes(
             app,
             templates,
@@ -212,11 +214,11 @@ def register_external_apis(update_bot_status=None, restart_system=None):
         restart_system: 重启系统函数
     """
     global app
-    from core.app_setup import check_auth
+    from admin.core.app_setup import check_auth
 
     # 1. 提醒 API
     try:
-        from reminder_api import register_reminder_routes
+        from admin.reminder_api import register_reminder_routes
         register_reminder_routes(app, check_auth)
         logger.info("✓ 提醒 API 路由注册成功")
     except Exception as e:
@@ -224,7 +226,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 2. 朋友圈 API
     try:
-        from friend_circle_api import register_friend_circle_routes
+        from admin.friend_circle_api import register_friend_circle_routes
         bot_instance = get_bot_instance()
         register_friend_circle_routes(app, check_auth, lambda: bot_instance)
         logger.info("✓ 朋友圈 API 路由注册成功")
@@ -233,7 +235,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 3. 切换账号 API
     try:
-        from switch_account_api import register_switch_account_routes
+        from admin.switch_account_api import register_switch_account_routes
         if update_bot_status:
             register_switch_account_routes(app, check_auth, update_bot_status)
             logger.info("✓ 切换账号 API 路由注册成功")
@@ -244,7 +246,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 4. 系统配置 API
     try:
-        from system_config_api import register_system_config_routes
+        from admin.system_config_api import register_system_config_routes
         register_system_config_routes(app, check_auth)
         logger.info("✓ 系统配置 API 路由注册成功")
     except Exception as e:
@@ -252,7 +254,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 5. GitHub 代理 API
     try:
-        from github_proxy_api import register_github_proxy_routes
+        from admin.github_proxy_api import register_github_proxy_routes
         register_github_proxy_routes(app, check_auth)
         logger.info("✓ GitHub 代理 API 路由注册成功")
     except Exception as e:
@@ -260,7 +262,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 6. 重启系统 API
     try:
-        from restart_api import register_restart_routes
+        from admin.restart_api import register_restart_routes
         register_restart_routes(app, check_auth)
         logger.info("✓ 重启系统 API 路由注册成功")
     except Exception as e:
@@ -268,7 +270,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 7. 适配器管理 API
     try:
-        from routes.adapter_routes import bp as adapter_bp
+        from admin.routes.adapter_routes import bp as adapter_bp
         app.include_router(adapter_bp)
         logger.info("✓ 适配器管理 API 路由注册成功")
     except Exception as e:
@@ -276,7 +278,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 8. Web 聊天 API
     try:
-        from web_chat_api import register_web_chat_routes
+        from admin.web_chat_api import register_web_chat_routes
         register_web_chat_routes(app, check_auth)
         logger.info("✓ Web 聊天 API 路由注册成功")
     except Exception as e:
@@ -284,7 +286,7 @@ def register_external_apis(update_bot_status=None, restart_system=None):
 
     # 9. 账号管理 API
     try:
-        from account_manager import register_account_manager_routes
+        from admin.account_manager import register_account_manager_routes
         if update_bot_status and restart_system:
             register_account_manager_routes(app, check_auth, update_bot_status, restart_system)
             logger.info("✓ 账号管理 API 路由注册成功")
@@ -292,6 +294,8 @@ def register_external_apis(update_bot_status=None, restart_system=None):
             logger.warning("账号管理 API 需要 update_bot_status 和 restart_system 函数")
     except Exception as e:
         logger.warning(f"账号管理 API 路由注册失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 # 导出接口
@@ -308,14 +312,14 @@ __all__ = [
 
 # 从 core.helpers 导出辅助函数
 try:
-    from core.helpers import (
+    from admin.core.helpers import (
         get_system_info,
         get_system_status,
         update_bot_status,
         restart_system
     )
 except ImportError:
-    logger.warning("无法从 core.helpers 导入辅助函数")
+    logger.warning("无法从 admin.core.helpers 导入辅助函数")
 
 
 if __name__ == "__main__":
