@@ -382,10 +382,24 @@ def init_app_state(app: FastAPI):
         app.state.plugin_manager = None
 
     # 4. 注入 bot 状态获取函数
-    app.state.get_bot_status = lambda: {
-        "is_login": bot_instance.is_login if bot_instance else False,
-        "wxid": getattr(bot_instance, "wxid", "") if bot_instance else ""
-    }
+    def get_bot_status_safe():
+        """安全获取 bot 状态，兼容 is_login 属性和 is_logged_in() 方法"""
+        if not bot_instance:
+            return {"is_login": False, "wxid": ""}
+
+        # 优先使用 is_logged_in() 方法，其次尝试 is_login 属性
+        is_login = False
+        if hasattr(bot_instance, 'is_logged_in') and callable(bot_instance.is_logged_in):
+            is_login = bot_instance.is_logged_in()
+        elif hasattr(bot_instance, 'is_login'):
+            is_login = bot_instance.is_login
+
+        return {
+            "is_login": is_login,
+            "wxid": getattr(bot_instance, "wxid", "")
+        }
+
+    app.state.get_bot_status = get_bot_status_safe
     logger.info("✓ 已注入 get_bot_status")
 
     logger.info("app.state 依赖注入完成")

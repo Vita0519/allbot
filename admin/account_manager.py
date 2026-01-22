@@ -1198,7 +1198,7 @@ def register_account_manager_routes(app, auth_func, status_update_func=None, res
             return RedirectResponse(url="/login?next=/accounts")
 
         # 获取版本信息
-        from admin.server import get_version_info
+        from admin.core.app_setup import get_version_info
         version_info = get_version_info()
 
         # 使用传入的 templates 实例，而不是重新创建
