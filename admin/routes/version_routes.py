@@ -181,19 +181,6 @@ def register_version_routes(app, get_version_info, current_dir,
             return {"success": False, "error": f"版本更新失败: {str(e)}"}
 
 
-    @app.get("/api/version/info", response_class=JSONResponse, tags=["系统"])
-    async def api_version_info():
-        """获取当前版本信息"""
-        try:
-            version_info = get_version_info()
-            return {
-                "success": True,
-                "data": version_info
-            }
-        except Exception as e:
-            logger.error(f"获取版本信息失败: {str(e)}")
-            return {"success": False, "error": str(e)}
-
     # ---------------------------------------------------------------------
     # 兼容端点：旧前端使用 /api/check_update 与 /api/update_bot
     # ---------------------------------------------------------------------

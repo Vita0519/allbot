@@ -375,65 +375,6 @@ async def api_friend_circle_list(
         pass
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
-@router.get("/user/{wxid}")
-async def api_user_friend_circle(
-    request: Request,
-    wxid: str,
-    refresh: bool = False,
-    max_id: int = 0,
-    page: int = 1,
-    limit: int = 20
-):
-    """
-    获取特定用户的朋友圈
-
-    Args:
-        request: 请求对象
-        wxid: 用户wxid
-        refresh: 是否强制刷新缓存
-        max_id: 朋友圈ID，用于分页获取
-
-    Returns:
-        JSONResponse: 用户朋友圈
-    """
-    try:
-        # 检查认证状态
-        await check_auth(request)
-
-        # 获取用户朋友圈
-        result = await get_friend_circle_list(wxid, refresh, max_id)
-
-        # 解析朋友圈数据
-        items = await parse_friend_circle_data(result)
-
-        # 分页
-        total = len(items)
-        start_idx = (page - 1) * limit
-        end_idx = start_idx + limit
-        items = items[start_idx:end_idx]
-
-        # 获取最后一条朋友圈ID，用于下一页
-        last_id = 0
-        if items:
-            last_id = items[-1].get("id", 0)
-
-        return {
-            "success": True,
-            "data": {
-                "items": items,
-                "total": total,
-                "page": page,
-                "limit": limit,
-                "last_id": last_id,
-                "has_more": total > page * limit
-            }
-        }
-    except HTTPException as e:
-        return JSONResponse(status_code=e.status_code, content={"success": False, "error": e.detail})
-    except Exception as e:
-        logger.error(f"获取用户朋友圈失败: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-
 @router.post("/like/{id}")
 async def api_like_friend_circle(
     request: Request,

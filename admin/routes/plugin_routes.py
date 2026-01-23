@@ -95,17 +95,6 @@ def register_plugin_routes(app):
             logger.error(f"获取DOW插件README失败: {str(e)}")
             return {"success": False, "error": f"获取DOW插件README失败: {str(e)}"}
 
-    # 获取DOW框架插件的配置文件路径
-    @app.get("/api/dow_plugin_config_file", response_class=JSONResponse)
-    async def api_dow_plugin_config_file(plugin_id: str, username: str = Depends(require_auth)):
-        try:
-            # 获取配置文件路径
-            result = get_dow_plugin_config_file(plugin_id)
-            return result
-        except Exception as e:
-            logger.error(f"获取DOW插件配置文件失败: {str(e)}")
-            return {"success": False, "error": f"获取DOW插件配置文件失败: {str(e)}"}
-
     # 获取DOW框架插件的配置文件内容
     @app.get("/api/dow_plugin_config_content", response_class=JSONResponse)
     async def api_dow_plugin_config_content(plugin_id: str, username: str = Depends(require_auth)):

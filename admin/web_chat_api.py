@@ -585,31 +585,6 @@ async def get_session_messages(request: Request, session_id: str):
         return JSONResponse({"success": False, "error": str(e)})
 
 
-@router.get("/debug")
-async def debug_webchat_state(request: Request):
-    """调试端点：查看 Web 对话内部状态"""
-    try:
-        await _require_auth(request)
-
-        adapter = _get_web_adapter()
-
-        return JSONResponse({
-            "success": True,
-            "data": {
-                "adapter_enabled": adapter.enabled if adapter else False,
-                "adapter_platform": adapter.platform if adapter else None,
-                "adapter_bot_identity": adapter.bot_identity if adapter else None,
-                "web_sessions": {k: {"created_at": v["created_at"], "message_count": len(v["messages"]), "sender_wxid": v["sender_wxid"]} for k, v in web_sessions.items()},
-                "sender_index": _sender_index,
-                "fixed_session_id": _FIXED_SESSION_ID,
-                "websocket_connections": len(_websocket_connections),
-            }
-        })
-    except Exception as e:
-        logger.error(f"获取调试信息失败: {e}")
-        return JSONResponse({"success": False, "error": str(e)})
-
-
 async def _broadcast_message(message: Dict[str, Any]):
     """广播消息到所有 WebSocket 连接"""
     if not _websocket_connections:
