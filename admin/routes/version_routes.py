@@ -26,11 +26,38 @@ def register_version_routes(app, get_version_info, current_dir,
     """
     from admin.utils import require_auth
     from utils.github_proxy import get_github_url
+    from admin.restart_api import restart_system as restart_system_func
 
     # 插件市场API配置
     PLUGIN_MARKET_API = {
         "BASE_URL": "http://v.sxkiss.top"
     }
+
+    async def _run_update_and_restart(version_info):
+        """
+        执行带进度更新并在完成后触发统一的重启流程
+        """
+        try:
+            from admin.update_with_progress import update_with_progress
+
+            await update_with_progress(
+                version_info,
+                update_progress_manager,
+                get_github_url,
+                current_dir,
+            )
+
+            # 更新完成后等待 3 秒，保证日志和前端进度显示完成
+            await asyncio.sleep(3)
+
+            # 统一走 restart_api 的异步重启逻辑（容器/非容器内部已处理）
+            try:
+                logger.warning("更新完成，准备重启系统（统一重启流程）...")
+                await restart_system_func()
+            except Exception as e:
+                logger.error(f"调用重启系统接口失败: {e}")
+        except Exception as e:
+            logger.error(f"更新流程执行失败: {e}")
 
     @app.post("/api/version/check", response_class=JSONResponse, tags=["系统"])
     async def api_version_check(request: Request):
@@ -150,27 +177,8 @@ def register_version_routes(app, get_version_info, current_dir,
                 logger.error("更新进度管理器不可用，无法执行更新")
                 return {"success": False, "error": "更新进度管理器不可用"}
 
-            # 启动带进度的更新流程
-            async def run_update():
-                try:
-                    from admin.update_with_progress import update_with_progress
-                    await update_with_progress(
-                        version_info,
-                        update_progress_manager,
-                        get_github_url,
-                        current_dir
-                    )
-                    # 更新完成后等待3秒再重启
-                    await asyncio.sleep(3)
-
-                    # 重启系统
-                    logger.warning("更新完成，准备重启系统...")
-                    import sys
-                    sys.exit(0)
-                except Exception as e:
-                    logger.error(f"更新流程执行失败: {e}")
-
-            asyncio.create_task(run_update())
+            # 启动带进度的更新流程并在完成后通过统一重启接口重启系统
+            asyncio.create_task(_run_update_and_restart(version_info))
 
             return {
                 "success": True,
@@ -220,23 +228,8 @@ def register_version_routes(app, get_version_info, current_dir,
             if not update_progress_manager:
                 return {"success": False, "error": "更新进度管理器不可用"}
 
-            async def run_update():
-                try:
-                    from admin.update_with_progress import update_with_progress
-                    await update_with_progress(
-                        version_info,
-                        update_progress_manager,
-                        get_github_url,
-                        current_dir,
-                    )
-                    await asyncio.sleep(3)
-                    logger.warning("更新完成，准备重启系统...")
-                    import sys
-                    sys.exit(0)
-                except Exception as e:
-                    logger.error(f"更新流程执行失败: {e}")
-
-            asyncio.create_task(run_update())
+            # 兼容端点也复用统一的更新+重启流程
+            asyncio.create_task(_run_update_and_restart(version_info))
             return {"success": True, "message": "更新任务已启动"}
         except Exception as e:
             logger.error(f"触发更新失败: {e}")
