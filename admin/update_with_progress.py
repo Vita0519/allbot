@@ -1,5 +1,8 @@
 """
-带进度推送的版本更新功能
+@input: os/asyncio/tempfile/shutil/zipfile/io/json/datetime from stdlib; requests; loguru.logger
+@output: update_with_progress(version_info, update_progress_manager, get_github_url, current_dir)
+@position: 管理后台的版本更新执行器，负责下载/备份/更新文件并通过进度管理器推送状态
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 
 import os
@@ -12,6 +15,42 @@ import json
 import requests
 from datetime import datetime
 from loguru import logger
+
+
+def _merge_copy_tree(
+    src_dir: str,
+    dst_dir: str,
+    *,
+    excluded_names: set[str],
+):
+    """
+    合并更新目录：递归复制 src_dir -> dst_dir，覆盖代码文件但不删除目标多余内容。
+
+    规则：
+    - 若目标已存在且文件名属于 excluded_names，则跳过覆盖（用于保留本地配置）。
+    - 若目标不存在，则仍会复制（用于首次生成默认配置）。
+    """
+    if not os.path.isdir(src_dir):
+        return
+
+    if os.path.exists(dst_dir) and not os.path.isdir(dst_dir):
+        os.remove(dst_dir)
+    os.makedirs(dst_dir, exist_ok=True)
+    for root, _, files in os.walk(src_dir):
+        rel_root = os.path.relpath(root, src_dir)
+        dst_root = dst_dir if rel_root == "." else os.path.join(dst_dir, rel_root)
+        if os.path.exists(dst_root) and not os.path.isdir(dst_root):
+            os.remove(dst_root)
+        os.makedirs(dst_root, exist_ok=True)
+
+        for filename in files:
+            src_file = os.path.join(root, filename)
+            dst_file = os.path.join(dst_root, filename)
+
+            if filename in excluded_names and os.path.exists(dst_file):
+                continue
+
+            shutil.copy2(src_file, dst_file)
 
 
 async def update_with_progress(version_info: dict, update_progress_manager, get_github_url, current_dir):
@@ -78,6 +117,7 @@ async def update_with_progress(version_info: dict, update_progress_manager, get_
             "WechatAPI",                  # 微信API客户端封装
             "utils",                      # 工具模块（装饰器、事件管理、插件管理等）
             "adapter",                    # 多平台适配器（QQ/Telegram/Web/Windows）
+            "plugins",                    # 插件目录（合并更新，保留本地配置与额外插件）
             "bot_core",                   # 核心调度引擎（已重构为模块化目录）
             "database",                   # 数据持久化层（SQLite/Redis）
             "version.json",               # 版本信息文件
@@ -101,19 +141,34 @@ async def update_with_progress(version_info: dict, update_progress_manager, get_
 
         # 阶段6: 更新文件 (75%)
         await update_progress_manager.update_progress(75, "更新文件", "正在安装新版本文件...")
+
+        merge_items = {"plugins", "adapter"}
+        # 插件/适配器配置文件：更新时保留本地版本，不覆盖（若本地不存在则会复制生成）。
+        excluded_config_names = {"config.toml", "config.json", "config.yaml", "config.yml"}
+
         for item in update_items:
             new_src_path = os.path.join(extracted_dir, item)
             if os.path.exists(new_src_path):
                 dst_path = os.path.join(root_dir, item)
-                if os.path.isdir(dst_path):
-                    shutil.rmtree(dst_path)
-                elif os.path.exists(dst_path):
-                    os.remove(dst_path)
 
-                if os.path.isdir(new_src_path):
-                    shutil.copytree(new_src_path, dst_path)
+                # plugins/ 与 adapter/ 采用合并更新：不删除本地多余内容，同时保留本地配置文件
+                if item in merge_items and os.path.isdir(new_src_path):
+                    _merge_copy_tree(
+                        new_src_path,
+                        dst_path,
+                        excluded_names=excluded_config_names,
+                    )
                 else:
-                    shutil.copy2(new_src_path, dst_path)
+                    # 其它目录/文件维持“替换更新”
+                    if os.path.isdir(dst_path):
+                        shutil.rmtree(dst_path)
+                    elif os.path.exists(dst_path):
+                        os.remove(dst_path)
+
+                    if os.path.isdir(new_src_path):
+                        shutil.copytree(new_src_path, dst_path)
+                    else:
+                        shutil.copy2(new_src_path, dst_path)
                 logger.info(f"已更新: {item}")
         await asyncio.sleep(0.5)
 
