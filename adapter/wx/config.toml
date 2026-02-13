@@ -17,6 +17,7 @@ platform = "wxfilehelper"
 # 可选别名：用于回复队列中过滤 platform 字段
 aliases = ["wx", "filehelper"]
 
+# 协议/接口定义来源: https://github.com/sxkiss/wx-filehelper-api
 # wx-filehelper-api 服务地址
 baseUrl = "http://127.0.0.1:8070"
 requestTimeout = 10
