@@ -57,6 +57,9 @@ def start_adapters(base_dir: Optional[Path] = None) -> List[AdapterInfo]:
         if not _is_enabled(raw_config):
             logger.info(f"适配器 {entry.name} 的配置未启用，跳过")
             continue
+        if _is_preinitialized(entry.name):
+            logger.info(f"适配器 {entry.name} 已存在运行实例，跳过重复启动")
+            continue
 
         adapter_cfg = raw_config.get("adapter", {})
         module_name = adapter_cfg.get("module") or f"adapter.{entry.name}"
@@ -118,3 +121,14 @@ def _run_adapter(info: AdapterInfo) -> None:
             logger.error(f"适配器 {info.name} 运行异常: {exc}")
     else:
         logger.warning(f"适配器 {info.name} 未实现 run() 方法，线程将结束")
+
+
+def _is_preinitialized(adapter_name: str) -> bool:
+    """检测由其他模块提前初始化的适配器，避免重复启动。"""
+    if adapter_name != "web":
+        return False
+    try:
+        from adapter.web import get_web_adapter
+    except Exception:
+        return False
+    return get_web_adapter() is not None

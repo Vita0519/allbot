@@ -45,12 +45,12 @@ class WxFileHelperAdapter:
             adapter_cfg.get("logLevel", "INFO"),
         )
 
-        self.wx_cfg = self._raw_config.get("wxfilehelper") or self._raw_config.get("wx") or {}
+        self.wx_cfg = self._raw_config.get("wx") or self._raw_config.get("wxfilehelper") or {}
         self.main_config = self._load_main_config()
 
         self.enabled = bool(self.wx_cfg.get("enable", False))
         if not self.enabled:
-            self._logger.warning("wxfilehelper.enable=false，跳过适配器初始化")
+            self._logger.warning("wx.enable=false（兼容 wxfilehelper.enable），跳过适配器初始化")
             return
 
         self.platform = (self.wx_cfg.get("platform") or "wxfilehelper").lower()
@@ -66,6 +66,7 @@ class WxFileHelperAdapter:
         self.polling_timeout = int(self.wx_cfg.get("pollingTimeout", 20))
         self.polling_limit = max(1, min(100, int(self.wx_cfg.get("pollingLimit", 50))))
         self.polling_interval = max(0.2, float(self.wx_cfg.get("pollingInterval", 1)))
+        self.login_auto_poll = bool(self.wx_cfg.get("loginAutoPoll", False))
         self.login_check_interval = max(1.0, float(self.wx_cfg.get("loginCheckInterval", 3)))
         self.qr_refresh_interval = max(3.0, float(self.wx_cfg.get("qrRefreshInterval", 30)))
         self.log_raw_message = bool(self.wx_cfg.get("logRawMessage", False))
@@ -247,7 +248,8 @@ class WxFileHelperAdapter:
             return False
 
     def _check_login_status(self) -> Tuple[bool, Dict[str, Any]]:
-        detail = self._api_get_json("/login/status", params={"auto_poll": "true"})
+        auto_poll = "true" if self.login_auto_poll else "false"
+        detail = self._api_get_json("/login/status", params={"auto_poll": auto_poll})
         if not isinstance(detail, dict):
             return False, {}
         return bool(detail.get("logged_in")), detail

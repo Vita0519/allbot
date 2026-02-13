@@ -1,6 +1,6 @@
 [adapter]
 name = "wxfilehelper"
-enabled = false
+enabled = true
 module = "adapter.wx"
 class = "WxFileHelperAdapter"
 replyQueue = "allbot_reply:wxfilehelper"
@@ -11,7 +11,7 @@ logLevel = "INFO"
 
 [wxfilehelper]
 # 是否启用 wx-filehelper-api 适配器
-enable = false
+enable = true
 # 平台标识：将写入入站消息的 Platform 字段，同时影响 ReplyDispatcher 路由
 platform = "wxfilehelper"
 # 可选别名：用于回复队列中过滤 platform 字段
@@ -25,6 +25,8 @@ requestTimeout = 10
 pollingTimeout = 20
 pollingLimit = 50
 pollingInterval = 1
+# 登录状态检测是否触发服务端主动轮询（建议 false，避免慢请求导致超时）
+loginAutoPoll = false
 
 # 登录检测与二维码刷新
 loginCheckInterval = 3
@@ -42,7 +44,7 @@ sessionId = "wxfilehelper-filehelper"
 # dedupCacheSize = 2000
 
 # 是否打印原始更新
-logRawMessage = false
+logRawMessage = true
 
 [wxfilehelper.redis]
 queue = "allbot"

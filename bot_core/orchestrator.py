@@ -7,6 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from adapter.loader import start_adapters
 from utils.config_manager import get_config
 from bot_core.client_initializer import ClientInitializer
 from bot_core.login_handler import WechatLoginHandler
@@ -72,6 +73,11 @@ async def bot_core():
 
         # 启动自动重启监控器
         service_initializer.start_auto_restart_monitor()
+
+        # ========== 5.1 启动适配器 ==========
+        logger.info("🔌 开始启动适配器...")
+        adapter_infos = start_adapters(script_dir)
+        logger.success(f"✅ 已启动 {len(adapter_infos)} 个适配器")
 
         logger.success("✅ 服务初始化完成")
 

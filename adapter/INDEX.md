@@ -10,7 +10,7 @@
 |------|------|----------|
 | __init__.py | Package | 适配器包入口 |
 | base.py | Core | 通用日志工具 `AdapterLogger` |
-| loader.py | Core | 扫描 `adapter/*/config.toml` 并启动启用适配器 |
+| loader.py | Core | 扫描 `adapter/*/config.toml` 并启动启用适配器（内置 web 预实例去重） |
 | qq/qq_adapter.py | Platform | QQ/NapCat 协议桥接 |
 | tg/telegram_adapter.py | Platform | Telegram Bot API 协议桥接 |
 | web/web_adapter.py | Platform | Web 管理后台对话桥接 |

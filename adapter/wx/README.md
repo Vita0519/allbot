@@ -12,7 +12,9 @@
 
 ## 配置
 
-见 `adapter/wx/config.toml`。
+见 `adapter/wx/config.toml`（适配器读取 `[wx]`，并兼容 `[wxfilehelper]`）。
+
+说明：`loginAutoPoll` 默认建议 `false`，仅读取当前登录态缓存，避免 `/login/status?auto_poll=true` 在弱网络环境阻塞过久。
 
 ## 运行要求
 
