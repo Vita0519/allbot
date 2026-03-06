@@ -631,7 +631,10 @@
         <!-- 通知会动态添加到这里 -->
     </div>
 
+    {% set _hide_webchat_widget = request.path.startswith('/plugin-market') %}
+
     <!-- Web 对话悬浮入口与窗口（单会话） -->
+    {% if not _hide_webchat_widget %}
     <div class="webchat-widget-fab" id="webchat-widget-fab">
         <button type="button" id="webchat-widget-open" aria-label="打开 Web 对话" title="Web 对话">
             <i class="bi bi-chat-dots"></i>
@@ -666,6 +669,7 @@
             <button type="button" class="btn btn-primary" id="webchat-widget-send">发送</button>
         </div>
     </div>
+    {% endif %}
 
     <!-- 本地JS库 -->
     <script src="/static/js/lib/bootstrap.bundle.min.js"></script>
@@ -869,7 +873,9 @@
     <script src="/admin/static/js/custom.js?v={{ version }}"></script>
 
     <!-- Web 对话悬浮窗口 -->
+    {% if not _hide_webchat_widget %}
     <script src="/static/js/webchat_widget.js?v={{ version }}"></script>
+    {% endif %}
 
     <!-- 版本检查脚本 -->
     <script>

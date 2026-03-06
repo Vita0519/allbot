@@ -1,18 +1,25 @@
 """
-插件管理路由模块
-
-职责：处理插件列表、启用/禁用、配置、市场等 API
+@input: fastapi, aiohttp, loguru, os, json, asyncio; require_auth from admin.utils; plugin_manager from utils
+@output: FastAPI routes for plugin management and plugin market aggregation/proxy
+@position: Admin routes layer handling plugin CRUD, market aggregation, submit, and caching
+@auto-doc: Update header and folder INDEX.md when this file changes
 """
 import asyncio
-import os
 import json
+import os
+import re
 import shutil
 import subprocess
+import time
+import traceback
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+
+import aiohttp
 from fastapi import Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from loguru import logger
-import aiohttp
 
 
 def register_plugins_routes(app, current_dir, plugin_manager=None):
@@ -552,37 +559,11 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
     async def api_get_plugin_categories(request: Request, username: str = Depends(require_auth)):
         # 检查认证状态
         try:
-            # 使用 aiohttp 客户端（与文件其他部分保持一致）
-            async with aiohttp.ClientSession() as session:
-                # 构建请求头
-                headers = {
-                    "X-Client-ID": get_client_id(),
-                    "X-Bot-Version": get_bot_version(),
-                    "User-Agent": f"XYBot/{get_bot_version()}"
-                }
-
-                try:
-                    # 请求远程API获取分类列表
-                    async with session.get(
-                        f"{PLUGIN_MARKET_API['BASE_URL']}/categories",
-                        headers=headers,
-                        timeout=10,
-                        allow_redirects=True
-                    ) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            logger.info(f"成功获取插件分类列表，共 {len(data.get('categories', []))} 个分类")
-                            return data
-                        else:
-                            logger.warning(f"获取分类列表失败，状态码: {response.status}")
-                            # 返回默认分类
-                            return await get_default_categories()
-
-                except aiohttp.ClientError as e:
-                    logger.error(f"请求分类列表失败: {str(e)}")
-                    # 返回默认分类
-                    return await get_default_categories()
-
+            categories = await _get_merged_categories()
+            if categories:
+                logger.info(f"成功获取插件分类列表，共 {len(categories)} 个分类")
+                return {"success": True, "categories": categories}
+            return await get_default_categories()
         except Exception as e:
             logger.error(f"获取插件分类失败: {str(e)}")
             # 返回默认分类
@@ -650,36 +631,358 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
             ]
         }
 
+    def _plugin_market_base_urls():
+        env_value = os.environ.get("PLUGIN_MARKET_BASE_URLS", "").strip()
+        base_urls = []
+        if env_value:
+            for item in env_value.split(","):
+                url = item.strip()
+                if url:
+                    base_urls.append(url)
+        else:
+            single_url = os.environ.get("PLUGIN_MARKET_BASE_URL", "").strip()
+            if single_url:
+                base_urls.append(single_url)
+            else:
+                base_urls = [
+                    "http://v.sxkiss.top",
+                    "http://xianan.xin:1562/api",
+                ]
+
+        deduped = []
+        seen = set()
+        for url in base_urls:
+            if url in seen:
+                continue
+            seen.add(url)
+            deduped.append(url)
+        return deduped
+
+    def _market_source_id(base_url: str) -> str:
+        lowered = (base_url or "").lower()
+        if "v.sxkiss.top" in lowered:
+            return "sxkiss"
+        if "xianan.xin" in lowered:
+            return "xbot"
+        parsed = urlparse(lowered)
+        host = parsed.netloc or parsed.path
+        safe = re.sub(r"[^a-z0-9]+", "_", host).strip("_")
+        return safe or "market"
+
+    def _build_market_url(base_url: str, path: str) -> str:
+        base = (base_url or "").rstrip("/")
+        if not path.startswith("/"):
+            path = "/" + path
+        return f"{base}{path}"
+
+    def _market_headers():
+        bot_version = get_bot_version()
+        return {
+            "X-Client-ID": get_client_id(),
+            "X-Bot-Version": bot_version,
+            "User-Agent": f"XYBot/{bot_version}",
+        }
+
+    def _market_cache_path() -> str:
+        return os.path.join(current_dir, "plugin_market_cache.json")
+
+    def _load_market_cache():
+        cache_path = _market_cache_path()
+        if not os.path.exists(cache_path):
+            return None
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                if "plugins" in data:
+                    return data
+                if "data" in data and isinstance(data["data"], dict):
+                    return {"plugins": data["data"].get("plugins", [])}
+            if isinstance(data, list):
+                return {"plugins": data}
+        except Exception as e:
+            logger.error(f"读取插件市场缓存失败: {e}")
+        return None
+
+    def _write_market_cache(plugins, meta=None):
+        cache_path = _market_cache_path()
+        payload = {
+            "plugins": plugins,
+            "cached_at": datetime.now().isoformat(),
+        }
+        if meta:
+            payload["sources"] = meta.get("sources", [])
+            payload["partial"] = meta.get("partial", False)
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"写入插件市场缓存失败: {e}")
+
+    def _normalize_tags(tags):
+        if tags is None:
+            return []
+        if isinstance(tags, list):
+            if tags and isinstance(tags[0], dict) and "name" in tags[0]:
+                return [t.get("name") for t in tags if isinstance(t, dict) and t.get("name")]
+            return [t for t in tags if t is not None]
+        if isinstance(tags, str):
+            return [t.strip() for t in tags.split(",") if t.strip()]
+        if isinstance(tags, dict):
+            return [v for v in tags.values() if v is not None]
+        return []
+
+    def _normalize_plugin(raw_plugin, source_id: str):
+        if not isinstance(raw_plugin, dict):
+            return None
+        tags = _normalize_tags(raw_plugin.get("tags"))
+        update_time = (
+            raw_plugin.get("update_time")
+            or raw_plugin.get("updated_at")
+            or raw_plugin.get("updateTime")
+            or raw_plugin.get("update_at")
+            or raw_plugin.get("submitted_at")
+        )
+        return {
+            "id": raw_plugin.get("id") or raw_plugin.get("plugin_id") or raw_plugin.get("name"),
+            "name": raw_plugin.get("name") or "Unknown Plugin",
+            "version": raw_plugin.get("version") or "1.0.0",
+            "description": raw_plugin.get("description") or "",
+            "author": raw_plugin.get("author") or "未知作者",
+            "tags": tags,
+            "category": raw_plugin.get("category") or raw_plugin.get("type") or "other",
+            "github_url": raw_plugin.get("github_url") or raw_plugin.get("github") or "",
+            "update_time": update_time or datetime.now().isoformat(),
+            "requirements": raw_plugin.get("requirements", []),
+            "source": source_id,
+        }
+
+    def _build_dedupe_key(plugin):
+        github_url = (plugin.get("github_url") or "").strip().lower()
+        if github_url:
+            return f"url:{github_url}"
+        name = (plugin.get("name") or "").strip().lower()
+        if name:
+            return f"name:{name}"
+        plugin_id = (plugin.get("id") or "").strip()
+        return f"id:{plugin_id}"
+
+    def _version_key(value):
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        raw = raw.lstrip("vV")
+        nums = [int(n) for n in re.findall(r"\d+", raw)]
+        return {"raw": raw, "nums": nums}
+
+    def _compare_versions(version_a, version_b):
+        if not version_a and not version_b:
+            return 0
+        key_a = _version_key(version_a)
+        key_b = _version_key(version_b)
+        nums_a = key_a["nums"] if key_a else []
+        nums_b = key_b["nums"] if key_b else []
+
+        if nums_a and nums_b:
+            max_len = max(len(nums_a), len(nums_b))
+            for idx in range(max_len):
+                part_a = nums_a[idx] if idx < len(nums_a) else 0
+                part_b = nums_b[idx] if idx < len(nums_b) else 0
+                if part_a != part_b:
+                    return 1 if part_a > part_b else -1
+        elif nums_a and not nums_b:
+            return 1
+        elif nums_b and not nums_a:
+            return -1
+
+        raw_a = "" if version_a is None else str(version_a)
+        raw_b = "" if version_b is None else str(version_b)
+        if raw_a == raw_b:
+            return 0
+        return 1 if raw_a > raw_b else -1
+
+    def _parse_update_time(value):
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    def _is_newer_by_time(candidate, existing):
+        dt_candidate = _parse_update_time(candidate)
+        dt_existing = _parse_update_time(existing)
+        if not dt_candidate or not dt_existing:
+            return False
+        return dt_candidate > dt_existing
+
+    def _merge_and_dedupe_plugins(plugins):
+        merged = {}
+        for plugin in plugins:
+            if not plugin:
+                continue
+            key = _build_dedupe_key(plugin)
+            current = merged.get(key)
+            if not current:
+                merged[key] = plugin
+                continue
+            cmp_result = _compare_versions(plugin.get("version"), current.get("version"))
+            if cmp_result > 0:
+                merged[key] = plugin
+                continue
+            if cmp_result == 0 and _is_newer_by_time(plugin.get("update_time"), current.get("update_time")):
+                merged[key] = plugin
+        merged_list = list(merged.values())
+        merged_list.sort(key=lambda item: ((item.get("name") or "").lower(), (item.get("github_url") or "").lower()))
+        return merged_list
+
+    async def _fetch_market_plugins(session: aiohttp.ClientSession, base_url: str, headers: dict):
+        url = _build_market_url(base_url, PLUGIN_MARKET_API["LIST"])
+        try:
+            async with session.get(url, headers=headers, timeout=10) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return {"success": False, "error": f"{response.status} - {error_text}", "base_url": base_url}
+                data = await response.json()
+        except Exception as e:
+            return {"success": False, "error": str(e), "base_url": base_url}
+
+        if isinstance(data, dict):
+            plugins = data.get("plugins", [])
+        elif isinstance(data, list):
+            plugins = data
+        else:
+            plugins = []
+        return {"success": True, "plugins": plugins, "base_url": base_url}
+
+    async def _fetch_market_categories(session: aiohttp.ClientSession, base_url: str, headers: dict):
+        url = _build_market_url(base_url, PLUGIN_MARKET_API["CATEGORIES"])
+        try:
+            async with session.get(url, headers=headers, timeout=10) as response:
+                if response.status != 200:
+                    return {"success": False, "error": f"{response.status}", "base_url": base_url}
+                data = await response.json()
+        except Exception as e:
+            return {"success": False, "error": str(e), "base_url": base_url}
+
+        categories = []
+        if isinstance(data, dict):
+            categories = data.get("categories", [])
+        elif isinstance(data, list):
+            categories = data
+        return {"success": True, "categories": categories, "base_url": base_url}
+
+    async def _get_merged_market_plugins():
+        base_urls = _plugin_market_base_urls()
+        if not base_urls:
+            return [], {"success_count": 0, "sources": [], "partial": True}
+
+        async with aiohttp.ClientSession() as session:
+            headers = _market_headers()
+            tasks = [
+                _fetch_market_plugins(session, base_url, headers)
+                for base_url in base_urls
+            ]
+            results = await asyncio.gather(*tasks)
+
+        all_plugins = []
+        sources = []
+        success_count = 0
+        for result in results:
+            source_id = _market_source_id(result.get("base_url"))
+            if result.get("success"):
+                success_count += 1
+                normalized = [
+                    _normalize_plugin(plugin, source_id)
+                    for plugin in result.get("plugins", [])
+                ]
+                all_plugins.extend([p for p in normalized if p])
+                sources.append(
+                    {
+                        "id": source_id,
+                        "base_url": result.get("base_url"),
+                        "count": len(result.get("plugins", [])),
+                    }
+                )
+            else:
+                sources.append(
+                    {
+                        "id": source_id,
+                        "base_url": result.get("base_url"),
+                        "error": result.get("error", "unknown error"),
+                    }
+                )
+
+        merged = _merge_and_dedupe_plugins(all_plugins)
+        meta = {
+            "success_count": success_count,
+            "sources": sources,
+            "partial": success_count != len(base_urls),
+        }
+        return merged, meta
+
+    async def _get_merged_categories():
+        base_urls = _plugin_market_base_urls()
+        if not base_urls:
+            return None
+        async with aiohttp.ClientSession() as session:
+            headers = _market_headers()
+            tasks = [
+                _fetch_market_categories(session, base_url, headers)
+                for base_url in base_urls
+            ]
+            results = await asyncio.gather(*tasks)
+
+        categories = {}
+        for result in results:
+            if not result.get("success"):
+                continue
+            for category in result.get("categories", []):
+                if not isinstance(category, dict):
+                    continue
+                key = str(category.get("value") or category.get("label") or category.get("id") or "").lower()
+                if not key:
+                    continue
+                if key in categories:
+                    continue
+                categories[key] = category
+
+        merged = list(categories.values())
+        merged.sort(key=lambda item: item.get("sort_order", 0))
+        return merged
+
     # API: 提交插件到市场
     @app.get("/api/plugin_market", response_class=JSONResponse)
     async def api_get_plugin_market(request: Request, username: str = Depends(require_auth)):
         # 检查认证状态
         try:
-            # 从远程服务器获取插件市场数据
-            async with aiohttp.ClientSession() as session:
-                try:
-                    # 设置超时时间防止长时间等待
-                    async with session.get(
-                        f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['LIST']}",
-                        timeout=10
-                    ) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            plugins = data.get('plugins', [])
-                            return {"success": True, "plugins": plugins}
-                        else:
-                            error_text = await response.text()
-                            return {"success": False, "error": f"远程服务器返回错误: {response.status} - {error_text}"}
-                except aiohttp.ClientError as e:
-                    logger.error(f"连接远程插件市场失败: {e}")
-                    # 尝试从本地缓存获取
-                    cache_path = os.path.join(current_dir, 'plugin_market_cache.json')
-                    if os.path.exists(cache_path):
-                        with open(cache_path, 'r', encoding='utf-8') as f:
-                            cache_data = json.load(f)
-                            return {"success": True, "plugins": cache_data.get('plugins', []), "cached": True}
-                    else:
-                        return {"success": False, "error": f"无法连接到远程服务器: {str(e)}"}
+            merged_plugins, meta = await _get_merged_market_plugins()
+            if meta["success_count"] > 0:
+                _write_market_cache(merged_plugins, meta)
+                return {
+                    "success": True,
+                    "plugins": merged_plugins,
+                    "partial": meta["partial"],
+                    "sources": meta["sources"],
+                }
+
+            cache_data = _load_market_cache()
+            if cache_data:
+                return {
+                    "success": True,
+                    "plugins": cache_data.get("plugins", []),
+                    "cached": True,
+                    "partial": True,
+                    "sources": meta["sources"],
+                }
+            return {"success": False, "error": "无法连接到插件市场服务器，且无本地缓存", "sources": meta["sources"]}
         except Exception as e:
             logger.error(f"获取插件市场失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -689,67 +992,26 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
     async def api_get_plugin_market_list(request: Request, username: str = Depends(require_auth)):
         # 检查认证状态
         try:
-            # 从远程服务器获取插件市场数据
-            async with aiohttp.ClientSession() as session:
-                try:
-                    # 设置超时时间防止长时间等待
-                    async with session.get(
-                        f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['LIST']}",
-                        timeout=10
-                    ) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            plugins = data.get('plugins', [])
-                            return {"success": True, "plugins": plugins}
-                        else:
-                            error_text = await response.text()
-                            return {"success": False, "error": f"远程服务器返回错误: {response.status} - {error_text}"}
-                except aiohttp.ClientError as e:
-                    logger.error(f"连接远程插件市场失败: {e}")
-                    # 尝试从本地缓存获取
-                    cache_path = os.path.join(current_dir, 'plugin_market_cache.json')
-                    if os.path.exists(cache_path):
-                        with open(cache_path, 'r', encoding='utf-8') as f:
-                            cache_data = json.load(f)
-                            return {"success": True, "plugins": cache_data.get('plugins', []), "cached": True}
-                    else:
-                        # 如果没有缓存，返回一些示例插件数据
-                        sample_plugins = [
-                            {
-                                "id": "sample1",
-                                "name": "DifyConversationManager",
-                                "description": "dify会话管理器，集成Dify接口对话，可以进行对话管理",
-                                "author": "全部的运营",
-                                "version": "1.2.0",
-                                "github_url": "https://github.com/sxkiss/allbot",
-                                "tags": ["AI", "对话"],
-                                "category": "ai",
-                                "update_time": datetime.now().isoformat()
-                            },
-                            {
-                                "id": "sample2",
-                                "name": "AutoSummary",
-                                "description": "快速总结文本内容的插件，让你的文章一键生成摘要",
-                                "author": "全部的运营",
-                                "version": "1.3.0",
-                                "github_url": "https://github.com/sxkiss/allbot",
-                                "tags": ["AI", "工具"],
-                                "category": "ai",
-                                "update_time": datetime.now().isoformat()
-                            },
-                            {
-                                "id": "sample3",
-                                "name": "ChatSummary",
-                                "description": "聊天记录总结工具，自动分析对话内容，提取关键信息",
-                                "author": "全部的运营",
-                                "version": "1.1.9",
-                                "github_url": "https://github.com/sxkiss/allbot",
-                                "tags": ["AI", "聊天"],
-                                "category": "ai",
-                                "update_time": datetime.now().isoformat()
-                            }
-                        ]
-                        return {"success": True, "plugins": sample_plugins, "sample": True}
+            merged_plugins, meta = await _get_merged_market_plugins()
+            if meta["success_count"] > 0:
+                _write_market_cache(merged_plugins, meta)
+                return {
+                    "success": True,
+                    "plugins": merged_plugins,
+                    "partial": meta["partial"],
+                    "sources": meta["sources"],
+                }
+
+            cache_data = _load_market_cache()
+            if cache_data:
+                return {
+                    "success": True,
+                    "plugins": cache_data.get("plugins", []),
+                    "cached": True,
+                    "partial": True,
+                    "sources": meta["sources"],
+                }
+            return {"success": False, "error": "无法连接到插件市场服务器，且无本地缓存", "sources": meta["sources"]}
         except Exception as e:
             logger.error(f"获取插件市场失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -779,39 +1041,88 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
             # 处理图标（如果有）
             if "icon" in data and data["icon"]:
                 plugin_data["icon"] = data["icon"]
+            base_urls = _plugin_market_base_urls()
+            if not base_urls:
+                return {"success": False, "error": "未配置插件市场地址"}
 
-            # 发送到远程服务器
+            headers = _market_headers()
+            headers["Content-Type"] = "application/json"
+            results = {}
+            success_count = 0
+
             async with aiohttp.ClientSession() as session:
-                try:
-                    # 将数据发送到远程服务器进行审核
-                    async with session.post(
-                        f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['SUBMIT']}",
-                        json=plugin_data,
-                        timeout=30
-                    ) as response:
+                submit_tasks = []
+                source_ids = []
+                for base_url in base_urls:
+                    source_id = _market_source_id(base_url)
+                    source_ids.append(source_id)
+                    submit_tasks.append(
+                        session.post(
+                            _build_market_url(base_url, PLUGIN_MARKET_API["SUBMIT"]),
+                            json=plugin_data,
+                            headers=headers,
+                            timeout=30,
+                        )
+                    )
+                responses = await asyncio.gather(*submit_tasks, return_exceptions=True)
+
+                for index, response in enumerate(responses):
+                    source_id = source_ids[index]
+                    base_url = base_urls[index]
+                    if isinstance(response, Exception):
+                        error_text = str(response)
+                        logger.error(f"提交插件到市场失败 [{source_id}]: {error_text}")
+                        results[source_id] = {"success": False, "base_url": base_url, "error": error_text}
+                        continue
+                    async with response:
                         if response.status == 200:
-                            resp_data = await response.json()
-                            return {"success": True, "message": "插件提交成功，等待审核", "id": resp_data.get("id")}
+                            try:
+                                resp_data = await response.json(content_type=None)
+                            except Exception:
+                                resp_data = {}
+                            results[source_id] = {
+                                "success": True,
+                                "base_url": base_url,
+                                "id": resp_data.get("id") if isinstance(resp_data, dict) else None,
+                            }
+                            success_count += 1
                         else:
                             error_text = await response.text()
-                            return {"success": False, "error": f"远程服务器返回错误: {response.status} - {error_text}"}
-                except aiohttp.ClientError as e:
-                    logger.error(f"提交插件到远程服务器失败: {e}")
+                            logger.warning(f"提交插件失败 [{source_id}]: {response.status} - {error_text}")
+                            results[source_id] = {
+                                "success": False,
+                                "base_url": base_url,
+                                "error": f"{response.status} - {error_text}",
+                            }
 
-                    # 保存到本地临时文件，稍后重试
-                    temp_dir = os.path.join(current_dir, 'pending_plugins')
-                    os.makedirs(temp_dir, exist_ok=True)
-                    safe_name = (plugin_data.get('name') or 'plugin').replace(' ', '_')
-                    temp_file = os.path.join(temp_dir, f"{int(time.time())}_{safe_name}.json")
-
-                    with open(temp_file, 'w', encoding='utf-8') as f:
-                        json.dump(plugin_data, f, ensure_ascii=False, indent=2)
-
-                    return {
-                        "success": True,
-                        "message": "由于网络问题，插件已暂存在本地，将在网络恢复后自动提交",
-                        "local_only": True
+            failed_sources = [
+                source_id for source_id, result in results.items() if not result.get("success")
+            ]
+            if failed_sources:
+                safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", plugin_data.get("name") or "plugin")
+                for source_id in failed_sources:
+                    source_pending_dir = os.path.join(PLUGIN_MARKET_API["PENDING_DIR"], source_id)
+                    os.makedirs(source_pending_dir, exist_ok=True)
+                    temp_file = os.path.join(
+                        source_pending_dir,
+                        f"{int(time.time())}_{safe_name}.json",
+                    )
+                    payload = {
+                        "plugin_data": plugin_data,
+                        "source_id": source_id,
+                        "base_url": results[source_id].get("base_url"),
                     }
+                    with open(temp_file, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+            if success_count > 0:
+                return {
+                    "success": True,
+                    "message": "插件已提交到插件市场",
+                    "partial": success_count != len(base_urls),
+                    "results": results,
+                }
+            return {"success": False, "error": "两个插件市场提交均失败", "results": results}
         except Exception as e:
             logger.error(f"提交插件失败: {str(e)}\n{traceback.format_exc()}")
             return {"success": False, "error": str(e)}
@@ -860,39 +1171,51 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
     async def sync_pending_plugins():
         """检查本地待审核插件并尝试同步到服务器"""
         try:
-            temp_dir = os.path.join(current_dir, 'pending_plugins')
+            temp_dir = PLUGIN_MARKET_API["PENDING_DIR"]
             if not os.path.exists(temp_dir):
                 return
 
-            for filename in os.listdir(temp_dir):
-                if not filename.endswith('.json'):
-                    continue
+            base_urls = _plugin_market_base_urls()
+            base_url_map = {_market_source_id(url): url for url in base_urls}
+            headers = _market_headers()
+            headers["Content-Type"] = "application/json"
 
-                file_path = os.path.join(temp_dir, filename)
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    plugin_data = json.load(f)
+            async with aiohttp.ClientSession() as session:
+                for source_id in os.listdir(temp_dir):
+                    source_dir = os.path.join(temp_dir, source_id)
+                    if not os.path.isdir(source_dir):
+                        continue
+                    for filename in os.listdir(source_dir):
+                        if not filename.endswith(".json"):
+                            continue
 
-                # 尝试发送到服务器
-                async with aiohttp.ClientSession() as session:
-                    try:
-                        # 使用插件市场API配置
-                        url = f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['SUBMIT']}"
-                        logger.info(f"正在同步插件到服务器: {url}")
+                        file_path = os.path.join(source_dir, filename)
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                        plugin_data = payload.get("plugin_data", payload)
+                        base_url = payload.get("base_url") or base_url_map.get(source_id)
+                        if not base_url:
+                            logger.warning(f"待同步插件缺少目标市场: {file_path}")
+                            continue
 
-                        async with session.post(
-                            url,
-                            json=plugin_data,
-                            timeout=10,
-                            ssl=False,  # 明确指定不使用SSL
-                            allow_redirects=True  # 允许重定向
-                        ) as response:
-                            if response.status == 200:
-                                # 删除本地文件
-                                os.remove(file_path)
-                                logger.info(f"成功同步插件到服务器: {plugin_data.get('name')}")
-                    except Exception as e:
-                        logger.error(f"同步插件到服务器失败: {e}")
-                        continue  # 跳过当前文件，稍后重试
+                        try:
+                            url = _build_market_url(base_url, PLUGIN_MARKET_API["SUBMIT"])
+                            logger.info(f"正在同步插件到服务器: {url}")
+
+                            async with session.post(
+                                url,
+                                json=plugin_data,
+                                headers=headers,
+                                timeout=10,
+                                ssl=False,
+                                allow_redirects=True,
+                            ) as response:
+                                if response.status == 200:
+                                    os.remove(file_path)
+                                    logger.info(f"成功同步插件到服务器: {plugin_data.get('name')}")
+                        except Exception as e:
+                            logger.error(f"同步插件到服务器失败: {e}")
+                            continue
         except Exception as e:
             logger.error(f"同步待审核插件失败: {str(e)}")
 
@@ -900,31 +1223,12 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
     async def cache_plugin_market():
         """从远程服务器缓存插件市场数据到本地"""
         try:
-            async with aiohttp.ClientSession() as session:
-                try:
-                    # 使用插件市场API配置，使用正确的URL格式
-                    url = f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['LIST']}"
-                    # 添加尾部斜杠以避免重定向（如果没有查询参数）
-                    if not url.endswith('/') and '?' not in url:
-                        url += '/'
-                    logger.info(f"正在缓存插件市场数据: {url}")
-
-                    async with session.get(url, timeout=10, ssl=False, allow_redirects=True) as response:
-                        if response.status == 200:
-                            data = await response.json()
-
-                            # 确保缓存目录存在
-                            cache_dir = os.path.dirname(os.path.join(current_dir, 'plugin_market_cache.json'))
-                            os.makedirs(cache_dir, exist_ok=True)
-
-                            # 保存到本地缓存
-                            cache_path = os.path.join(current_dir, 'plugin_market_cache.json')
-                            with open(cache_path, 'w', encoding='utf-8') as f:
-                                json.dump(data, f, ensure_ascii=False, indent=2)
-
-                            logger.info(f"成功缓存插件市场数据，共{len(data.get('plugins', []))}个插件")
-                except Exception as e:
-                    logger.error(f"缓存插件市场数据失败: {e}")
+            merged_plugins, meta = await _get_merged_market_plugins()
+            if meta["success_count"] > 0:
+                _write_market_cache(merged_plugins, meta)
+                logger.info(f"成功缓存插件市场数据，共{len(merged_plugins)}个插件")
+            else:
+                logger.warning("缓存插件市场数据失败：无可用市场响应")
         except Exception as e:
             logger.error(f"缓存插件市场任务失败: {str(e)}")
 
@@ -951,14 +1255,19 @@ def register_plugins_routes(app, current_dir, plugin_manager=None):
         asyncio.create_task(periodic_sync())
 
     # 插件市场API配置
-    # 说明：用于插件安装/详情等场景的上游地址；与前面的同名配置保持一致。
+    # 说明：支持双市场聚合，默认读取 v.sxkiss.top 与 xbot（xianan.xin:1562/api）。
     PLUGIN_MARKET_API = {
-        "BASE_URL": os.environ.get("PLUGIN_MARKET_BASE_URL", "http://v.sxkiss.top"),
+        "BASE_URLS": _plugin_market_base_urls(),
         "LIST": "/plugins/?status=approved",  # 添加尾部斜杠，避免重定向
+        "CATEGORIES": "/categories",
+        "SUBMIT": "/plugins/",
         "DETAIL": "/plugins/",
         "INSTALL": "/plugins/install/",
         "CACHE_DIR": os.path.join(current_dir, "cache"),
+        "PENDING_DIR": os.path.join(current_dir, "pending_plugins"),
     }
+    os.makedirs(PLUGIN_MARKET_API["CACHE_DIR"], exist_ok=True)
+    os.makedirs(PLUGIN_MARKET_API["PENDING_DIR"], exist_ok=True)
 
     # 辅助函数：获取客户端ID
     def get_client_id():

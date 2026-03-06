@@ -665,7 +665,8 @@
                         <button class="btn btn-sm btn-outline-secondary" id="btn-refresh-market" title="刷新插件市场">
                             <i class="bi bi-arrow-clockwise"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-primary" id="btn-submit-plugin" title="提交插件">
+                        <button class="btn btn-sm btn-outline-primary" id="btn-submit-plugin" title="提交插件"
+                            type="button" data-bs-toggle="modal" data-bs-target="#submitPluginModal">
                             <i class="bi bi-cloud-upload-fill me-1"></i> 提交插件
                         </button>
                     </div>
@@ -889,6 +890,9 @@
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    <div class="d-flex justify-content-end mt-3">
+                        <div id="plugin-market-pagination"></div>
                     </div>
                 </div>
             </div>

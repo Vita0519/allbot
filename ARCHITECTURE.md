@@ -8,6 +8,7 @@ The adapter layer now includes QQ, Telegram, Web, Win, and wx-filehelper-api bri
 Adapters are started inside bot core initialization before message listening starts.
 Wechat login runs asynchronously to avoid blocking adapter message ingestion.
 Wechat protocol access is encapsulated in `WechatAPI/`, including a dedicated 869 client.
+Plugin market backend now supports dual-source aggregation (v.sxkiss.top + xbot API) with dedupe by higher version.
 
 - `adapter/INDEX.md`: Multi-platform adapters and queue bridge contracts
 - `admin/INDEX.md`: Admin server, update pipeline, and related APIs

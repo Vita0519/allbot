@@ -1,7 +1,16 @@
+/**
+ * @input { fetch, localStorage, bootstrap } 浏览器能力与插件市场 API
+ * @output 插件市场页面渲染、分页、搜索与提交逻辑
+ * @position 管理后台插件市场前端逻辑入口
+ * @auto-doc Update header and folder INDEX.md when this file changes
+ */
 // 全局变量
 let marketPlugins = [];
 let currentCategory = 'all';
 let installedPlugins = []; // 存储已安装的插件信息
+let marketCurrentPage = 1;
+const marketPageSize = 10;
+let marketFilteredPlugins = [];
 
 // 插件市场API配置（统一走本地同源代理，避免 CORS 和端口暴露问题）
 const PLUGIN_MARKET_API = {
@@ -352,6 +361,7 @@ async function loadPluginMarket(forceRefresh = false) {
                 </td>
             </tr>
         `;
+        renderMarketPagination(0);
 
         // 检查缓存
         if (!forceRefresh) {
@@ -359,6 +369,7 @@ async function loadPluginMarket(forceRefresh = false) {
             if (cachedData) {
                 console.log('使用缓存的插件市场数据');
                 marketPlugins = cachedData;
+                marketCurrentPage = 1;
                 renderMarketPlugins(marketPlugins);
                 return;
             }
@@ -387,6 +398,7 @@ async function loadPluginMarket(forceRefresh = false) {
         }
 
         marketPlugins = plugins;
+        marketCurrentPage = 1;
 
         // 数据格式化与验证
         marketPlugins = marketPlugins.map(plugin => {
@@ -425,6 +437,7 @@ async function loadPluginMarket(forceRefresh = false) {
         if (cachedData) {
             console.log('使用缓存的插件市场数据（请求失败）');
             marketPlugins = cachedData;
+            marketCurrentPage = 1;
             renderMarketPlugins(marketPlugins);
             return;
         }
@@ -870,8 +883,111 @@ function updateRecommendedPlugins(plugins) {
         recommendedContainer.innerHTML += cardHtml;
     });
 
-    // 重新初始化推荐插件卡片的点击事件
-    initRecommendedPluginsEvents();
+// 重新初始化推荐插件卡片的点击事件
+initRecommendedPluginsEvents();
+}
+
+function getMarketPageCount(total) {
+    if (!total || total <= 0) {
+        return 1;
+    }
+    return Math.max(1, Math.ceil(total / marketPageSize));
+}
+
+function getPagedPlugins(plugins) {
+    const totalPages = getMarketPageCount(plugins.length);
+    if (marketCurrentPage > totalPages) {
+        marketCurrentPage = totalPages;
+    }
+    if (marketCurrentPage < 1) {
+        marketCurrentPage = 1;
+    }
+    const start = (marketCurrentPage - 1) * marketPageSize;
+    return plugins.slice(start, start + marketPageSize);
+}
+
+function buildMarketPageItems(totalPages, currentPage) {
+    const items = [];
+    if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) {
+            items.push(i);
+        }
+        return items;
+    }
+
+    items.push(1);
+    if (currentPage > 3) {
+        items.push('...');
+    }
+
+    const start = Math.max(2, currentPage - 1);
+    const end = Math.min(totalPages - 1, currentPage + 1);
+    for (let i = start; i <= end; i++) {
+        items.push(i);
+    }
+
+    if (currentPage < totalPages - 2) {
+        items.push('...');
+    }
+    items.push(totalPages);
+    return items;
+}
+
+function renderMarketPagination(total) {
+    const container = document.getElementById('plugin-market-pagination');
+    if (!container) {
+        return;
+    }
+
+    const totalPages = getMarketPageCount(total);
+    if (totalPages <= 1) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const pageItems = buildMarketPageItems(totalPages, marketCurrentPage);
+    let html = '<nav aria-label="插件市场分页"><ul class="pagination pagination-sm mb-0">';
+
+    const prevDisabled = marketCurrentPage === 1 ? ' disabled' : '';
+    html += `
+        <li class="page-item${prevDisabled}">
+            <button class="page-link" data-page="${marketCurrentPage - 1}" ${prevDisabled ? 'disabled' : ''}>上一页</button>
+        </li>
+    `;
+
+    pageItems.forEach(item => {
+        if (item === '...') {
+            html += '<li class="page-item disabled"><span class="page-link">…</span></li>';
+            return;
+        }
+        const active = item === marketCurrentPage ? ' active' : '';
+        html += `
+            <li class="page-item${active}">
+                <button class="page-link" data-page="${item}">${item}</button>
+            </li>
+        `;
+    });
+
+    const nextDisabled = marketCurrentPage === totalPages ? ' disabled' : '';
+    html += `
+        <li class="page-item${nextDisabled}">
+            <button class="page-link" data-page="${marketCurrentPage + 1}" ${nextDisabled ? 'disabled' : ''}>下一页</button>
+        </li>
+    `;
+
+    html += '</ul></nav>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('button[data-page]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const nextPage = Number(btn.getAttribute('data-page'));
+            if (!Number.isFinite(nextPage)) {
+                return;
+            }
+            marketCurrentPage = nextPage;
+            renderMarketPlugins(marketFilteredPlugins);
+        });
+    });
 }
 
 // 渲染插件市场列表
@@ -886,8 +1002,11 @@ function renderMarketPlugins(plugins) {
             return;
         }
 
+        const pluginList = Array.isArray(plugins) ? plugins : [];
+        marketFilteredPlugins = pluginList;
+
         // 更新推荐插件
-        updateRecommendedPlugins(plugins);
+        updateRecommendedPlugins(pluginList);
 
         // 生成标签云
         generateTagCloud();
@@ -896,7 +1015,7 @@ function renderMarketPlugins(plugins) {
         let installedCount = 0;
         let updateCount = 0;
 
-        plugins.forEach(plugin => {
+        pluginList.forEach(plugin => {
             const status = getPluginStatus(plugin);
             if (status.installed) {
                 installedCount++;
@@ -906,7 +1025,7 @@ function renderMarketPlugins(plugins) {
             }
         });
 
-        console.log(`插件统计: 总数=${plugins.length}, 已安装=${installedCount}, 可更新=${updateCount}`);
+        console.log(`插件统计: 总数=${pluginList.length}, 已安装=${installedCount}, 可更新=${updateCount}`);
 
         // 更新插件数量
         const countElement = document.getElementById('plugin-count');
@@ -914,7 +1033,7 @@ function renderMarketPlugins(plugins) {
         const updatesCountElement = document.getElementById('updates-count');
 
         if (countElement) {
-            countElement.textContent = plugins.length;
+            countElement.textContent = pluginList.length;
         }
 
         if (installedCountElement) {
@@ -946,7 +1065,7 @@ function renderMarketPlugins(plugins) {
         }
 
         // 如果没有插件
-        if (!plugins || !Array.isArray(plugins) || plugins.length === 0) {
+        if (!pluginList || !Array.isArray(pluginList) || pluginList.length === 0) {
             container.innerHTML = `
                 <tr>
                     <td colspan="7" class="text-center py-5">
@@ -955,8 +1074,12 @@ function renderMarketPlugins(plugins) {
                     </td>
                 </tr>
             `;
+            renderMarketPagination(0);
             return;
         }
+
+        renderMarketPagination(pluginList.length);
+        const pagedPlugins = getPagedPlugins(pluginList);
 
         // 清空容器
         container.innerHTML = '';
@@ -970,7 +1093,7 @@ function renderMarketPlugins(plugins) {
         });
 
         // 渲染每个插件行
-        plugins.forEach((plugin, index) => {
+        pagedPlugins.forEach((plugin, index) => {
             try {
                 if (!plugin || typeof plugin !== 'object') {
                     console.warn('跳过无效的插件数据:', plugin);
@@ -1115,6 +1238,7 @@ function renderMarketPlugins(plugins) {
                 </tr>
             `;
         }
+        renderMarketPagination(0);
     }
 }
 
@@ -1133,6 +1257,7 @@ function filterMarketPlugins(category) {
     // 保存当前分类
     currentCategory = category;
 
+    marketCurrentPage = 1;
     if (category === 'all') {
         renderMarketPlugins(marketPlugins);
     } else {
@@ -1208,6 +1333,7 @@ function filterPluginsByTag(tag) {
     }
 
     // 如果不是预定义分类，按标签文本过滤
+    marketCurrentPage = 1;
     const filtered = marketPlugins.filter(plugin => {
         // 检查插件标签
         if (plugin.tags) {
@@ -1245,11 +1371,13 @@ function filterPluginsByTag(tag) {
 // 搜索插件
 function searchMarketPlugins(keyword) {
     if (!keyword || keyword.trim() === '') {
+        marketCurrentPage = 1;
         filterMarketPlugins(currentCategory);
         return;
     }
 
     keyword = keyword.toLowerCase().trim();
+    marketCurrentPage = 1;
 
     const filtered = marketPlugins.filter(plugin => {
         return (

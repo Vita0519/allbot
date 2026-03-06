@@ -14,8 +14,6 @@ import urllib.parse
 import mimetypes
 import base64
 import uuid
-import hashlib
-import shutil
 
 import aiohttp
 import filetype
@@ -31,7 +29,7 @@ import traceback
 import shutil
 from PIL import Image
 import xml.etree.ElementTree as ET
-import random
+from utils.config_manager import ConfigManager
 
 # 添加API代理导入
 try:
@@ -46,11 +44,11 @@ except ImportError:
     logger.warning("未找到API管理中心集成模块，Dify插件将使用直接连接")
 
 # 常量定义
-XYBOT_PREFIX = ""
-DIFY_ERROR_MESSAGE = "抱歉，ai助手遇到一点问题，请稍后重试！\n"
-INSUFFICIENT_POINTS_MESSAGE = "抱歉，ai助手遇到一点问题，请稍后重试！"
-VOICE_TRANSCRIPTION_FAILED = "抱歉，ai助手遇到一点问题，请稍后重试！"
-TEXT_TO_VOICE_FAILED = "抱歉，ai助手遇到一点问题，请稍后重试！"
+XYBOT_PREFIX = "-----老夏的金库-----\n"
+DIFY_ERROR_MESSAGE = "🙅对不起，Dify出现错误！\n"
+INSUFFICIENT_POINTS_MESSAGE = "😭你的积分不够啦！需要 {price} 积分"
+VOICE_TRANSCRIPTION_FAILED = "\n语音转文字失败"
+TEXT_TO_VOICE_FAILED = "\n文本转语音失败"
 # 聊天室相关常量已移除
 
 # 聊天室相关类已移除
@@ -66,7 +64,7 @@ class ModelConfig:
 class Dify(PluginBase):
     description = "Dify插件"
     author = "老夏的金库"
-    version = "1.6.2"
+    version = "1.6.1"  # 更新版本号 - 增加图片引用功能
     is_ai_platform = True  # 标记为 AI 平台插件
 
     def __init__(self):
@@ -119,41 +117,17 @@ class Dify(PluginBase):
             raise
 
         self.db = XYBotDB()
-        
-        # 加载缓存配置
-        self.persistent_cache = config.get("persistent_cache", False)
-        
-        # 设置缓存路径
-        self.cache_dir = os.path.join(os.path.dirname(__file__), "cache")
-        self.image_cache_dir = os.path.join(self.cache_dir, "images")
-        self.file_cache_dir = os.path.join(self.cache_dir, "files")
-        self.cache_index_file = os.path.join(self.cache_dir, "cache_index.json")
-        
-        # 创建缓存目录
-        if self.persistent_cache:
-            os.makedirs(self.cache_dir, exist_ok=True)
-            os.makedirs(self.image_cache_dir, exist_ok=True)
-            os.makedirs(self.file_cache_dir, exist_ok=True)
-        
-        # 设置缓存和超时时间
         self.image_cache = {}
-        self.image_cache_timeout = config.get("image_cache_timeout", 86400)  # 默认1天图片缓存超时
+        self.image_cache_timeout = 60
         # 添加文件缓存
         self.file_cache = {}
-        self.file_cache_timeout = config.get("file_cache_timeout", 604800)  # 默认7天文件缓存超时
-        
-        # 加载缓存索引
-        if self.persistent_cache:
-            self._load_cache_index()
-        
+        self.file_cache_timeout = 300  # 5分钟文件缓存超时
         # 添加文件存储目录配置
         self.files_dir = "files"
         # 创建文件存储目录
         os.makedirs(self.files_dir, exist_ok=True)
         # 创建临时文件目录
         os.makedirs("temp", exist_ok=True)
-        
-        logger.info(f"缓存配置: 持久化缓存={self.persistent_cache}, 图片缓存超时={self.image_cache_timeout}秒, 文件缓存超时={self.file_cache_timeout}秒")
 
         # 添加Agent模式相关属性
         self.current_agent_thoughts = {}  # 存储当前Agent思考过程，格式: {conversation_id: [thought1, thought2, ...]}
@@ -363,11 +337,6 @@ class Dify(PluginBase):
         if not self.enable:
             return
 
-        # 如果消息是引用消息，则直接返回，由 on_quote_message 处理器处理
-        if "Quote" in message and message["Quote"]:
-            logger.debug("Dify: handle_text 检测到引用消息，跳过处理，交由引用处理器。")
-            return
-
         content = message["Content"].strip()
         command = content.split(" ")[0] if content else ""
 
@@ -399,13 +368,13 @@ class Dify(PluginBase):
                 if message.get("IsGroup", False):
                     await bot.send_at_message(
                         message["FromWxid"],
-                        "抱歉，ai助手遇到一点问题，请稍后重试！",
+                        "\n重置对话失败，可能是因为没有活跃的对话或发生了错误。",
                         [message["SenderWxid"]]
                     )
                 else:
                     await bot.send_text_message(
                         message["FromWxid"],
-                        "抱歉，ai助手遇到一点问题，请稍后重试！"
+                        "重置对话失败，可能是因为没有活跃的对话或发生了错误。"
                     )
             return
 
@@ -458,7 +427,7 @@ class Dify(PluginBase):
                     logger.debug("查询内容为空，不处理")
                 elif not model.api_key:
                     logger.error(f"模型 {next((name for name, config in self.models.items() if config == model), '未知')} 的API密钥未配置")
-                    await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                    await bot.send_text_message(message["FromWxid"], "所选模型的API密钥未配置，请联系管理员")
             return
 
         # 以下是群聊处理逻辑
@@ -497,7 +466,7 @@ class Dify(PluginBase):
                 # 重置失败，发送通知
                 await bot.send_at_message(
                     group_id,
-                    "抱歉，ai助手遇到一点问题，请稍后重试！",
+                    "\n重置对话失败，可能是因为没有活跃的对话或发生了错误。",
                     [user_wxid]
                 )
             return
@@ -560,6 +529,44 @@ class Dify(PluginBase):
 
         # 如果检测到唤醒词，处理唤醒词请求
         if wakeup_detected and wakeup_model and processed_wakeup_query:
+            # 修复：如果是引用消息且有 image_md5，优先查找并上传图片
+            files = []
+            if message.get("Quote") and (message.get("ImageMD5") or (message.get("Quote", {}).get("MsgType") == 3)):
+                image_md5 = message.get("ImageMD5")
+                if not image_md5:
+                    quote_info = message.get("Quote", {})
+                    quoted_content = quote_info.get("Content", "")
+                    if "<?xml" in quoted_content and "<img" in quoted_content:
+                        try:
+                            import xml.etree.ElementTree as ET
+                            root = ET.fromstring(quoted_content)
+                            img_element = root.find('img')
+                            if img_element is not None:
+                                image_md5 = img_element.get('md5')
+                        except Exception as e:
+                            logger.error(f"解析引用图片消息XML失败: {e}")
+                if image_md5:
+                    try:
+                        logger.info(f"唤醒词引用消息：尝试根据MD5查找图片: {image_md5}")
+                        image_content = await self.find_image_by_md5(image_md5)
+                        if image_content:
+                            logger.info(f"根据MD5找到图片，大小: {len(image_content)} 字节")
+                            file_id = await self.upload_file_to_dify(
+                                image_content,
+                                f"image_{int(time.time())}.jpg",
+                                "image/jpeg",
+                                group_id,
+                                model_config=wakeup_model
+                            )
+                            if file_id:
+                                logger.info(f"唤醒词引用图片上传成功，文件ID: {file_id}")
+                                files = [file_id]
+                            else:
+                                logger.error("唤醒词引用图片上传失败")
+                        else:
+                            logger.warning(f"未找到MD5为 {image_md5} 的图片")
+                    except Exception as e:
+                        logger.error(f"唤醒词引用图片处理失败: {e}")
             if wakeup_model.api_key:  # 检查唤醒词对应模型的API密钥
                 if await self._check_point(bot, message, wakeup_model):  # 传递模型到_check_point
                     logger.info(f"使用唤醒词对应模型处理请求")
@@ -570,7 +577,7 @@ class Dify(PluginBase):
             else:
                 model_name = next((name for name, config in self.models.items() if config == wakeup_model), '未知')
                 logger.error(f"唤醒词对应模型 '{model_name}' 的API密钥未配置")
-                await bot.send_at_message(group_id, "抱歉，ai助手遇到一点问题，请稍后重试！", [user_wxid])
+                await bot.send_at_message(group_id, f"\n此模型API密钥未配置，请联系管理员", [user_wxid])
             return
 
         # 继续处理@或命令的情况
@@ -670,11 +677,11 @@ class Dify(PluginBase):
     @on_at_message(priority=20)
     async def handle_at(self, bot: WechatAPIClient, message: dict):
         if not self.enable:
-            return True
+            return
 
         if not self.current_model.api_key:
-            await bot.send_at_message(message["FromWxid"], "\n抱歉，ai助手遇到一点问题，请稍后重试！", [message["SenderWxid"]])
-            return True # Add return True here
+            await bot.send_at_message(message["FromWxid"], "\n你还没配置Dify API密钥！", [message["SenderWxid"]])
+            return False
 
         await self.check_and_notify_inactive_users(bot)
 
@@ -701,10 +708,10 @@ class Dify(PluginBase):
                 # 重置失败，发送通知
                 await bot.send_at_message(
                     message["FromWxid"],
-                    "抱歉，ai助手遇到一点问题，请稍后重试！",
+                    "\n重置对话失败，可能是因为没有活跃的对话或发生了错误。",
                     [message["SenderWxid"]]
                 )
-            return True # Add return True here
+            return
 
         # 检查是否以@开头，如果是，则移除@部分
         if content.startswith('@'):
@@ -750,8 +757,8 @@ class Dify(PluginBase):
         logger.debug(f"提取到的 query: {query}")
 
         if not query:
-            await bot.send_at_message(message["FromWxid"], "\n抱歉，ai助手遇到一点问题，请稍后重试！", [message["SenderWxid"]])
-            return True # Change return False to True
+            await bot.send_at_message(message["FromWxid"], "\n请输入你的问题或指令。", [message["SenderWxid"]])
+            return False
 
         # 检查唤醒词或触发词，在图片上传前获取对应模型
         model, processed_query, is_switch = self.get_model_from_message(query, message["SenderWxid"])
@@ -762,14 +769,14 @@ class Dify(PluginBase):
                 f"\n已切换到{model_name.upper()}模型，将一直使用该模型直到下次切换。",
                 [message["SenderWxid"]]
             )
-            return True # Change return False to True
+            return False
 
         # 检查模型API密钥是否可用
         if not model.api_key:
             model_name = next((name for name, config in self.models.items() if config == model), '未知')
             logger.error(f"所选模型 '{model_name}' 的API密钥未配置")
-            await bot.send_at_message(message["FromWxid"], f"\n抱歉，ai助手遇到一点问题，请稍后重试！", [message["SenderWxid"]])
-            return True # Change return False to True
+            await bot.send_at_message(message["FromWxid"], f"\n此模型API密钥未配置，请联系管理员", [message["SenderWxid"]])
+            return False
 
         # 检查是否有最近的图片
         files = []
@@ -798,44 +805,7 @@ class Dify(PluginBase):
             await self.dify(bot, message, processed_query, files=files, specific_model=model)
         else:
             logger.info(f"积分检查失败，无法处理@消息请求")
-
-        return True # Change return False to True
-
-    def should_process_quote_message(self, message: dict, content: str, quote_info: dict) -> bool:
-        """判断是否应该处理引用消息
-        调整判断逻辑，移除 `has_instruction`，并优化日志记录
-        """
-        # 检查是否@机器人
-        is_at_bot = False
-        for robot_name in self.robot_names or []:
-            if f"@{robot_name}" in content:
-                is_at_bot = True
-                break
-
-        # 检查唤醒词
-        has_wakeup_word = False
-        content_lower = content.lower()
-        for wakeup_word in self.wakeup_word_to_model:
-            if content_lower.startswith(wakeup_word.lower()) or f" {wakeup_word.lower()}" in content_lower:
-                has_wakeup_word = True
-                break
-
-        # 检查触发词
-        has_trigger = False
-        for model_config in self.models.values():
-            for trigger in model_config.trigger_words:
-                if trigger and trigger.lower() in content_lower:
-                    has_trigger = True
-                    break
-            if has_trigger:
-                break
-        
-        # 最终执行条件
-        should_execute = is_at_bot or has_wakeup_word or has_trigger
-        
-        logger.info(f"引用消息触发条件检查 - @机器人: {is_at_bot}, 唤醒词: {has_wakeup_word}, 触发词: {has_trigger}, 最终执行: {should_execute}")
-        
-        return should_execute
+        return False
 
     @on_quote_message(priority=20)
     async def handle_quote(self, bot: WechatAPIClient, message: dict):
@@ -848,24 +818,19 @@ class Dify(PluginBase):
             logger.info(f"消息 {message.get('MsgId') or message.get('NewMsgId')} 已经处理过，跳过")
             return False  # 消息已处理，阻止后续插件处理
 
+        # 标记消息为已处理
+        self.mark_message_processed(message)
+
         # 提取引用消息的内容
         content = message["Content"].strip()
         quote_info = message.get("Quote", {})
         quoted_content = quote_info.get("Content", "")
-        quoted_nickname = quote_info.get("Nickname", "")
-        quoted_msg_type = quote_info.get("MsgType")
+        quoted_sender = quote_info.get("Nickname", "")
 
-        logger.info(f"处理引用消息: 内容={content}, 引用内容={quoted_content}, 引用发送者={quoted_nickname}")
+        logger.info(f"处理引用消息: 内容={content}, 引用内容={quoted_content}, 引用发送者={quoted_sender}")
 
-        # 检查是否应该处理此引用消息
-        should_process = self.should_process_quote_message(message, content, quote_info)
-        if not should_process:
-            logger.info("引用消息不满足处理条件，跳过图片上传")
-            return True  # 允许其他插件处理
-        
         # 检查引用的消息是否包含图片
         image_md5 = message.get("ImageMD5")  # 首先检查消息中是否已经有MD5（从XML处理中传递过来的）
-        image_aeskey = None
 
         # 如果没有，尝试从引用消息中提取
         if not image_md5 and quote_info.get("MsgType") == 3:  # 图片消息
@@ -899,120 +864,81 @@ class Dify(PluginBase):
                     if content.startswith(f'@{robot_name}'):
                         is_at_bot = True
                         break
-
-                    # 特殊处理：检查是否是@小小x这样的格式（可能有空格）
                     if content.lower().startswith(f'@{robot_name.lower()}'):
                         is_at_bot = True
                         break
 
-            # 检查是否应该处理引用消息（使用触发条件直接判断）
-            should_process = self.should_process_quote_message(message, content, quote_info)
-            if should_process:
-                # 现在才标记消息为已处理
-                self.mark_message_processed(message)
-                
-                # 处理引用消息
+            # 只有当用户@了机器人时，才处理引用消息
+            if is_at and is_at_bot:
+                # 处理@机器人的引用消息
                 query = content
-
                 # 检查是否以@开头，如果是，则移除@部分
                 if content.startswith('@'):
-                    # 先检查是否是@机器人
                     at_bot_prefix = None
                     for robot_name in self.robot_names:
                         if content.startswith(f'@{robot_name}'):
                             at_bot_prefix = f'@{robot_name}'
                             break
-
                     if at_bot_prefix:
-                        # 如果是@机器人，移除@机器人部分
                         query = content[len(at_bot_prefix):].strip()
                         logger.debug(f"移除@{at_bot_prefix}后的查询内容: {query}")
                     else:
-                        # 如果不是@机器人，则尝试找第一个空格
                         space_index = content.find(' ')
                         if space_index > 0:
-                            # 保留第一个空格后面的所有内容
                             query = content[space_index+1:].strip()
                             logger.debug(f"移除@前缀后的查询内容: {query}")
                         else:
-                            # 如果没有空格，尝试提取@后面的内容
-                            # 找到第一个非空格字符的位置
                             for i in range(1, len(content)):
                                 if content[i] != '@' and content[i] != ' ':
                                     query = content[i:].strip()
                                     logger.debug(f"提取@后面的内容: {query}")
                                     break
                             else:
-                                # 如果整个内容都是@，将query设为空
                                 query = ""
                 else:
-                    # 如果不是以@开头，则尝试移除@机器人名称
                     for robot_name in self.robot_names:
                         query = query.replace(f"@{robot_name}", "").strip()
 
-                # 如果没有内容，则使用引用的内容
+                # 优化：如果引用的是图片，不拼接 (引用消息: ...)
                 if not query:
-                    query = f"请回复这条消息: '{quoted_content}'"
+                    if image_md5:
+                        query = ""
+                    else:
+                        query = f"请回复这条消息: '{quoted_content}'"
                 else:
-                    query = f"{query} (引用消息: '{quoted_content}')"
+                    if not image_md5:
+                        query = f"{query} (引用消息: '{quoted_content}')"
+                    # 如果是图片引用，query 保持原内容
 
-                # 检查是否有唤醒词或触发词
                 model, processed_query, is_switch = self.get_model_from_message(query, user_wxid)
 
                 if is_switch:
                     model_name = next(name for name, config in self.models.items() if config == model)
-                    await bot.send_at_message(
-                        message["FromWxid"],
-                        f"\n已切换到{model_name.upper()}模型，将一直使用该模型直到下次切换。",
-                        [user_wxid]
-                    )
+                    if message.get("IsGroup"):
+                        await bot.send_at_message(
+                            message["FromWxid"],
+                            f"已切换到{model_name.upper()}模型，将一直使用该模型直到下次切换。",
+                            [user_wxid]
+                        )
+                    else:
+                        await bot.send_text_message(
+                            message["FromWxid"],
+                            f"已切换到{model_name.upper()}模型，将一直使用该模型直到下次切换。"
+                        )
                     return False
 
                 # 检查模型API密钥是否可用
                 if not model.api_key:
                     model_name = next((name for name, config in self.models.items() if config == model), '未知')
                     logger.error(f"所选模型 '{model_name}' 的API密钥未配置")
-                    await bot.send_at_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！", [user_wxid])
+                    if message.get("IsGroup"):
+                        await bot.send_at_message(message["FromWxid"], "此模型API密钥未配置，请联系管理员", [user_wxid])
+                    else:
+                        await bot.send_text_message(message["FromWxid"], "此模型API密钥未配置，请联系管理员")
                     return False
 
                 # 检查是否有图片
                 files = []
-
-                # 图片处理 - 优先从图片引用中提取
-                has_image = False
-                
-                # 修复image_md5提取 - 对于引用消息，可能需要从XML中提取
-                if not image_md5 and quoted_msg_type == 3 and "<?xml" in quoted_content and "<img" in quoted_content:
-                    try:
-                        # 移除可能的发送者前缀
-                        xml_start = quoted_content.find("<?xml")
-                        if xml_start > 0:
-                            quoted_content_cleaned = quoted_content[xml_start:]
-                        else:
-                            quoted_content_cleaned = quoted_content
-                            
-                        try:
-                            root = ET.fromstring(quoted_content_cleaned)
-                            img_element = root.find('img')
-                            if img_element is not None:
-                                image_md5 = img_element.get('md5')
-                                image_aeskey = img_element.get('aeskey') or img_element.get('cdnthumbaeskey')
-                                logger.info(f"在普通引用消息解析XML中提取到MD5: {image_md5}, AESKey: {image_aeskey}")
-                        except ET.ParseError:
-                            # 使用正则表达式提取
-                            import re
-                            md5_match = re.search(r'md5="([^"]+)"', quoted_content_cleaned)
-                            aeskey_match = re.search(r'aeskey="([^"]+)"', quoted_content_cleaned)
-                            if md5_match:
-                                image_md5 = md5_match.group(1)
-                            if aeskey_match:
-                                image_aeskey = aeskey_match.group(1)
-                            if image_md5 or image_aeskey:
-                                logger.info(f"在普通引用消息中使用正则表达式提取到MD5: {image_md5}, AESKey: {image_aeskey}")
-                    except Exception as e:
-                        logger.error(f"在普通引用消息中提取图片信息失败: {e}")
-                
-                # 尝试方法1: 使用MD5查找图片
                 if image_md5:
                     try:
                         logger.info(f"尝试根据MD5查找图片: {image_md5}")
@@ -1021,117 +947,53 @@ class Dify(PluginBase):
                             logger.info(f"根据MD5找到图片，大小: {len(image_content)} 字节")
                             file_id = await self.upload_file_to_dify(
                                 image_content,
-                                f"image_{int(time.time())}.jpg",
+                                f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
                                 "image/jpeg",
-                                group_id,
+                                message["FromWxid"],
                                 model_config=model
                             )
                             if file_id:
-                                logger.info(f"MD5方法上传图片成功，文件ID: {file_id}")
+                                logger.info(f"引用图片上传成功，文件ID: {file_id}")
                                 files = [file_id]
-                                has_image = True
                             else:
-                                logger.error("MD5方法上传图片失败")
+                                logger.error("引用图片上传失败")
                         else:
                             logger.warning(f"未找到MD5为 {image_md5} 的图片")
                     except Exception as e:
-                        logger.error(f"MD5方法处理图片失败: {e}")
-                        
-                # 尝试方法2: 使用AESKey下载图片
-                if not has_image and image_aeskey:
-                    try:
-                        logger.info(f"尝试使用AESKey下载图片: {image_aeskey}")
-                        # 提取URL或使用默认URL
-                        cdn_url = None
-                        try:
-                            import re
-                            url_match = re.search(r'cdnmidimgurl="([^"]+)"', str(quoted_content))
-                            if url_match:
-                                cdn_url = url_match.group(1)
-                                logger.info(f"从引用内容中提取到URL: {cdn_url}")
-                        except Exception as e:
-                            logger.error(f"提取URL失败: {e}")
-                            
-                        # 使用bot的download_image方法下载图片
-                        try:
-                            if hasattr(bot, 'download_image'):
-                                image_content = await bot.download_image(image_aeskey, cdn_url)
-                                if isinstance(image_content, str):
-                                    # 可能是base64编码，尝试解码
-                                    import base64
-                                    try:
-                                        image_content = base64.b64decode(image_content)
-                                    except:
-                                        logger.error("Base64解码失败")
-                                        image_content = None
-                                
-                                if image_content and len(image_content) > 0:
-                                    logger.info(f"使用AESKey下载图片成功，大小: {len(image_content)} 字节")
-                                    file_id = await self.upload_file_to_dify(
-                                        image_content,
-                                        f"image_{int(time.time())}.jpg",
-                                        "image/jpeg",
-                                        group_id,
-                                        model_config=model
-                                    )
-                                    if file_id:
-                                        logger.info(f"AESKey方法上传图片成功，文件ID: {file_id}")
-                                        files = [file_id]
-                                        has_image = True
-                                    else:
-                                        logger.error("AESKey方法上传图片失败")
-                                else:
-                                    logger.warning("AESKey下载图片失败或内容为空")
-                            else:
-                                logger.warning("bot实例没有download_image方法")
-                        except Exception as e:
-                            logger.error(f"使用AESKey下载图片失败: {e}")
-                    except Exception as e:
-                        logger.error(f"AESKey方法处理图片失败: {e}")
+                        logger.error(f"处理引用图片失败: {e}")
 
-                # 如果没有找到引用的图片，检查最近的缓存图片
-                if not files:
-                    image_content = await self.get_cached_image(group_id)
-                    if image_content:
-                        try:
-                            logger.debug("引用消息中发现最近的图片，准备上传到 Dify")
-                            file_id = await self.upload_file_to_dify(
-                                image_content,
-                                f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
-                                "image/jpeg",
-                                group_id,
-                                model_config=model
-                            )
-                            if file_id:
-                                logger.debug(f"图片上传成功，文件ID: {file_id}")
-                                files = [file_id]
-                            else:
-                                logger.error("图片上传失败")
-                        except Exception as e:
-                            logger.error(f"处理图片失败: {e}")
+                # 如果没有内容，则使用引用的内容或默认提示
+                if not content or content.strip() == "":
+                    # 如果是图片消息，使用特殊提示
+                    if image_md5 or quoted_msg_type == 3:
+                        processed_query = f"请分析这张图片"
+                    else:
+                        processed_query = f"请回复这条消息: '{quoted_content}'"
 
                 if await self._check_point(bot, message, model):
-                    logger.info(f"引用消息使用模型 '{next((name for name, config in self.models.items() if config == model), '未知')}' 处理请求")
+                    logger.info(f"XML引用消息使用模型 '{next((name for name, config in self.models.items() if config == model), '未知')}' 处理请求")
                     await self.dify(bot, message, processed_query, files=files, specific_model=model)
+                    return False
                 else:
-                    logger.info(f"积分检查失败，无法处理引用消息请求")
+                    logger.info(f"积分检查失败，无法处理XML引用消息请求")
+                    return True
             else:
-                logger.info("引用消息不是@机器人，跳过处理")
-                return True  # 允许其他插件处理
+                logger.info("Dify: XML引用消息中没有@机器人，忽略该消息")
+                return True
         else:
             # 私聊引用消息处理
             user_wxid = message["SenderWxid"]
-            
-            # 标记为已处理
-            self.mark_message_processed(message)
-
-            # 如果没有内容，则使用引用的内容
+            # 优化：如果引用的是图片，不拼接 (引用消息: ...)
             if not content:
-                query = f"请回复这条消息: '{quoted_content}'"
+                if image_md5:
+                    query = ""
+                else:
+                    query = f"请回复这条消息: '{quoted_content}'"
             else:
-                query = f"{content} (引用消息: '{quoted_content}')"
-
-            # 检查是否有唤醒词或触发词
+                if not image_md5:
+                    query = f"{content} (引用消息: '{quoted_content}')"
+                else:
+                    query = content
             model, processed_query, is_switch = self.get_model_from_message(query, user_wxid)
 
             if is_switch:
@@ -1146,13 +1008,11 @@ class Dify(PluginBase):
             if not model.api_key:
                 model_name = next((name for name, config in self.models.items() if config == model), '未知')
                 logger.error(f"所选模型 '{model_name}' 的API密钥未配置")
-                await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                await bot.send_text_message(message["FromWxid"], "此模型API密钥未配置，请联系管理员")
                 return False
 
             # 检查是否有图片
             files = []
-
-            # 优先检查引用消息中的图片MD5
             if image_md5:
                 try:
                     logger.info(f"尝试根据MD5查找图片: {image_md5}")
@@ -1176,34 +1036,12 @@ class Dify(PluginBase):
                 except Exception as e:
                     logger.error(f"处理引用图片失败: {e}")
 
-            # 如果没有找到引用的图片，检查最近的缓存图片
-            if not files:
-                image_content = await self.get_cached_image(message["FromWxid"])
-                if image_content:
-                    try:
-                        logger.debug("引用消息中发现最近的图片，准备上传到 Dify")
-                        file_id = await self.upload_file_to_dify(
-                            image_content,
-                            f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
-                            "image/jpeg",
-                            message["FromWxid"],
-                            model_config=model
-                        )
-                        if file_id:
-                            logger.debug(f"图片上传成功，文件ID: {file_id}")
-                            files = [file_id]
-                        else:
-                            logger.error("图片上传失败")
-                    except Exception as e:
-                        logger.error(f"处理图片失败: {e}")
-
             if await self._check_point(bot, message, model):
                 logger.info(f"私聊引用消息使用模型 '{next((name for name, config in self.models.items() if config == model), '未知')}' 处理请求")
                 await self.dify(bot, message, processed_query, files=files, specific_model=model)
             else:
                 logger.info(f"积分检查失败，无法处理引用消息请求")
-
-        return False
+            return False
 
     @on_voice_message(priority=20)
     async def handle_voice(self, bot: WechatAPIClient, message: dict):
@@ -1214,12 +1052,12 @@ class Dify(PluginBase):
             return
 
         if not self.current_model.api_key:
-            await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+            await bot.send_text_message(message["FromWxid"], "你还没配置Dify API密钥！")
             return False
 
         query = await self.audio_to_text(bot, message)
         if not query:
-            await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+            await bot.send_text_message(message["FromWxid"], VOICE_TRANSCRIPTION_FAILED)
             return False
 
         logger.debug(f"语音转文字结果: {query}")
@@ -1238,7 +1076,7 @@ class Dify(PluginBase):
         if not model.api_key:
             model_name = next((name for name, config in self.models.items() if config == model), '未知')
             logger.error(f"语音消息选择的模型 '{model_name}' 的API密钥未配置")
-            await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+            await bot.send_text_message(message["FromWxid"], "所选模型的API密钥未配置，请联系管理员")
             return False
 
         # 积分检查
@@ -1392,9 +1230,8 @@ class Dify(PluginBase):
         if "Ats" in message and message["Ats"]:
             logger.debug(f"消息包含Ats字段: {message['Ats']}")
             # 如果机器人的wxid在Ats列表中，则返回True
-            # 获取配置中的robot-wxids
-            config_robot_wxids = self.bot.config.get("XYBot", {}).get("robot-wxids", [])
-            for wxid in config_robot_wxids:
+            # 检查所有可能的机器人wxid
+            for wxid in ["wxid_uz9za1pqr3ea22", "wxid_p60yfpl5zg2m29"]:
                 if wxid in message["Ats"]:
                     logger.debug(f"在Ats字段中发现机器人的wxid: {wxid}")
                     return True
@@ -1734,7 +1571,7 @@ class Dify(PluginBase):
                             # 通知用户
                             await bot.send_text_message(
                                 message["FromWxid"],
-                                "抱歉，ai助手遇到一点问题，请稍后重试！"
+                                f"{XYBOT_PREFIX}检测到对话异常，已重置对话。正在重新处理您的问题..."
                             )
 
                             # 等待一小段时间，确保数据库操作完成
@@ -1804,7 +1641,7 @@ class Dify(PluginBase):
                                         logger.error(f"重试请求失败: HTTP {new_resp.status} - {error_msg}")
                                         await bot.send_text_message(
                                             message["FromWxid"],
-                                            "抱歉，ai助手遇到一点问题，请稍后重试！"
+                                            f"{XYBOT_PREFIX}重试请求失败，请稍后再试。"
                                         )
                                         return
 
@@ -1835,125 +1672,16 @@ class Dify(PluginBase):
         """
         try:
             logger.info(f"开始下载文件: {url}")
-            
-            # 随机选择一个User-Agent
-            user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ]
-            
-            # 随机选择一个Referer - 为alapi.cn使用合适的referer
-            alapi_referers = [
-                "https://www.alapi.cn/",
-                "https://alapi.cn/",
-                "https://file.alapi.cn/",
-                "https://api.alapi.cn/"
-            ]
-            
-            general_referers = [
-                "https://www.google.com/",
-                "https://www.bing.com/",
-                "https://www.baidu.com/"
-            ]
-            
-            import random
-            user_agent = random.choice(user_agents)
-            
-            # 设置请求头
-            headers = {
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Cache-Control": "max-age=0",
-                "DNT": "1",
-                "Upgrade-Insecure-Requests": "1"
-            }
-            
-            # 检测是否为alapi.cn的请求，如果是则添加更强的防爬措施
-            if "alapi.cn" in url:
-                logger.info("检测到alapi.cn请求，添加增强的防爬请求头")
-                referer = random.choice(alapi_referers)
-                headers["Referer"] = referer
-                headers["sec-ch-ua"] = '"Chromium";v="122", "Google Chrome";v="122", "Not(A:Brand";v="24"'
-                headers["sec-ch-ua-mobile"] = "?0"
-                headers["sec-ch-ua-platform"] = '"Windows"'
-                headers["Sec-Fetch-Dest"] = "document"
-                headers["Sec-Fetch-Mode"] = "navigate"
-                headers["Sec-Fetch-Site"] = "same-site"
-                headers["Sec-Fetch-User"] = "?1"
-                
-                # 添加Cookie头 - 一些网站需要验证cookie
-                cookie_parts = [
-                    f"_ga=GA1.1.{random.randint(1000000000, 9999999999)}.{int(time.time())}",
-                    f"_ga_XXXXXXXX=GS1.1.{int(time.time())}.1.1.{int(time.time())}.0.0.0",
-                    f"cf_clearance={random.randbytes(16).hex()}",
-                    f"__cf_bm={random.randbytes(32).hex()}"
-                ]
-                headers["Cookie"] = "; ".join(cookie_parts)
-                
-                # 如果请求的是60s早报图片，额外修改headers以更好地模拟浏览器行为
-                if "/60s/" in url:
-                    headers["Referer"] = "https://alapi.cn/api/view/60s"
-                    headers["Origin"] = "https://alapi.cn"
-                    headers["Sec-Fetch-Site"] = "same-site"
-                    headers["Sec-Fetch-Mode"] = "navigate"
-                    headers["Sec-Fetch-Dest"] = "image"
-            else:
-                headers["Referer"] = random.choice(general_referers)
-            
-            # 增加延迟，避免请求过于频繁
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-            
-            # 创建自定义的 TCPConnector 并增加连接超时
-            connector = aiohttp.TCPConnector(ssl=False, ttl_dns_cache=300)
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
-            
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with aiohttp.ClientSession() as session:
                 # 正确的方式是在请求时设置代理，而不是在创建会话时
                 proxy = self.http_proxy if self.http_proxy else None
-                async with session.get(url, proxy=proxy, headers=headers, allow_redirects=True) as resp:
+                async with session.get(url, proxy=proxy) as resp:
                     if resp.status == 200:
                         content = await resp.read()
                         logger.info(f"文件下载成功，大小: {len(content)} 字节")
                         return content
                     else:
-                        error_text = await resp.text()
-                        logger.error(f"文件下载失败: HTTP {resp.status}, 错误: {error_text}")
-                        
-                        # 如果是 alapi.cn 且返回了特定错误，尝试使用备用URL
-                        if "alapi.cn" in url and "/60s/" in url:
-                            try:
-                                # 从URL中提取日期部分
-                                import re
-                                date_match = re.search(r'/60s/(\d+)\.', url)
-                                if date_match:
-                                    date_str = date_match.group(1)
-                                    logger.info(f"尝试使用备用来源获取早报图片，日期: {date_str}")
-                                    
-                                    # 构建备用URL
-                                    backup_url = f"https://api.03c3.cn/zb/api.php?date={date_str}"
-                                    logger.info(f"使用备用URL: {backup_url}")
-                                    
-                                    # 使用备用URL请求
-                                    backup_headers = {
-                                        "User-Agent": user_agent,
-                                        "Referer": "https://api.03c3.cn/",
-                                        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-                                    }
-                                    
-                                    async with session.get(backup_url, headers=backup_headers, allow_redirects=True) as backup_resp:
-                                        if backup_resp.status == 200:
-                                            backup_content = await backup_resp.read()
-                                            if len(backup_content) > 5000:  # 确保不是错误页面
-                                                logger.info(f"备用来源下载成功，大小: {len(backup_content)} 字节")
-                                                return backup_content
-                            except Exception as backup_err:
-                                logger.error(f"备用来源下载失败: {backup_err}")
+                        logger.error(f"文件下载失败: HTTP {resp.status}")
                         return None
         except Exception as e:
             logger.error(f"下载文件时发生错误: {e}")
@@ -1992,9 +1720,9 @@ class Dify(PluginBase):
             # 图片类型列表
             image_extensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg']
             # 音频类型列表
-            audio_extensions = ['mp3', 'm4a', 'wav', 'amr']
+            audio_extensions = ['mp3', 'm4a', 'wav', 'webm', 'amr']
             # 视频类型列表
-            video_extensions = ['mp4', 'mov', 'mpeg', 'mpga', 'webm', 'avi', 'flv', 'mkv']
+            video_extensions = ['mp4', 'mov', 'mpeg', 'mpga']
 
             # 默认使用 custom 类型
             file_type = "custom"
@@ -2181,198 +1909,287 @@ class Dify(PluginBase):
             logger.error(traceback.format_exc())
             return None
 
-    def _filter_thought_tags(self, text: str) -> str:
-        """过滤掉文本中的思考标签内容
+    async def dify_handle_text(self, bot: WechatAPIClient, message: dict, text: str, model_config=None, message_id=None):
+        """
+        处理Dify返回的文本消息，支持引用回复
 
         Args:
-            text (str): 原始文本内容
-
-        Returns:
-            str: 过滤后的文本内容
+            bot: WechatAPIClient实例
+            message: 消息字典
+            text: 要处理的文本内容
+            model_config: 模型配置（可选）
+            message_id: Dify生成的消息ID（可选，用于文本转语音）
         """
-        # 使用正则表达式匹配并移除 <think>...</think> 标签中的内容
+        # 使用传入的model_config，如果没有则使用默认模型
+        model = model_config or self.current_model
+
+        # 先过滤掉<think>...</think>标签中的内容
         think_pattern = r'<think>.*?</think>'
-        filtered_text = re.sub(think_pattern, '', text, flags=re.DOTALL)
-        return filtered_text
+        text = re.sub(think_pattern, '', text, flags=re.DOTALL)
+        logger.debug(f"过滤思考标签后的文本: {text[:100]}...")
 
-    async def dify_handle_text(self, bot: WechatAPIClient, message: dict, text: str, model_config=None, message_id=None):
-        """处理Dify返回的文本消息"""
-        # 过滤思考标签
-        text = self._filter_thought_tags(text)
-        logger.debug(f"过滤思考标签后的文本: {text}")
+        # 获取会话ID，用于查找Agent思考过程
+        # 根据消息类型选择正确的ID来获取会话ID
+        if message["IsGroup"]:
+            # 群聊消息，使用群聊ID
+            conversation_id = self.db.get_llm_thread_id(message["FromWxid"], namespace="dify")
+            logger.debug(f"群聊消息，从群聊ID获取会话ID: {message['FromWxid']}")
+        else:
+            # 私聊消息，使用原来的FromWxid
+            conversation_id = self.db.get_llm_thread_id(message["FromWxid"], namespace="dify")
 
-        # 检查是否是卡片消息XML
-        if text.strip().startswith("<appmsg"):
-            try:
-                # 解析XML内容
-                root = ET.fromstring(text)
-                # 发送卡片消息
-                await self.send_app_message(bot, message["FromWxid"], text)
-                logger.info("成功发送卡片消息")
-                return
-            except Exception as e:
-                logger.error(f"处理卡片消息失败: {e}")
-                # If card message fails, fall back to sending original text
-                text = "抱歉，ai助手遇到一点问题，请稍后重试！"
-        
-        # Process Markdown links (images, videos, etc.) and interleaved text
-        # Use a pattern that captures both image links and regular links
-        link_pattern = r'!\[(.*?)\]\((.*?)\)|\[(.*?)\]\((.*?)\)'  # Find all link occurrences and their positions
-        # Each match will be a tuple: (non-image alt text, non-image url, image alt text, image url)
-        link_occurrences = [(match.start(), match.end(), match.groups()) for match in re.finditer(link_pattern, text)]
-        
-        last_pos = 0
-        
-        # Iterate through text segments and links
-        for start_pos, end_pos, groups in link_occurrences:
-            # Text before the current link
-            text_segment = text[last_pos:start_pos].strip()
-            if text_segment:
-                # Send text segment
-                if "//n" in text_segment:
-                    parts = text_segment.split("//n")
-                    for i, part in enumerate(parts):
-                        cleaned_part = part.strip()
-                        if cleaned_part:
-                            # Decide whether to use quote reply for the first text part before the first link
-                            should_quote = message_id and last_pos == 0 and i == 0
-                            if should_quote:
-                                await self.send_quote_message(
-                                    bot,
-                                    message["FromWxid"],
-                                    cleaned_part,
-                                    message_id,
-                                    message["FromWxid"],
-                                    message.get("FromNickname", ""),
-                                    message.get("Content", "")
-                                )
-                            else:
-                                await bot.send_text_message(message["FromWxid"], cleaned_part)
-                else:
-                     # Decide whether to use quote reply for the first text part before the first link
-                    should_quote = message_id and last_pos == 0
-                    if should_quote:
-                        await self.send_quote_message(
-                            bot,
-                            message["FromWxid"],
-                            text_segment,
-                            message_id,
-                            message["FromWxid"],
-                            message.get("FromNickname", ""),
-                            message.get("Content", "")
-                        )
-                    else:
-                        await bot.send_text_message(message["FromWxid"], text_segment)
+        # 如果启用了Agent模式且有思考过程，可以在这里处理
+        if self.support_agent_mode and conversation_id in self.current_agent_thoughts:
+            thoughts = self.current_agent_thoughts[conversation_id]
+            if thoughts:
+                logger.debug(f"发现Agent思考过程，共{len(thoughts)}条")
+                # 这里可以根据需要处理思考过程，例如添加到消息中
+                # 例如：添加使用的工具信息
+                tools_used = []
+                for thought in thoughts:
+                    if thought.get("tool") and thought["tool"] not in tools_used:
+                        tools_used.append(thought["tool"])
 
-            # Process the link
-            # groups will contain (non-image alt, non-image url, image alt, image url)
-            # Exactly one of the pairs will be non-None depending on whether it's ![]() or []()
-            non_image_alt, non_image_url, image_alt, image_url = groups
+                if tools_used:
+                    logger.info(f"Agent使用了以下工具: {', '.join(tools_used)}")
 
-            alt_text = image_alt if image_alt is not None else non_image_alt
-            url = image_url if image_url is not None else non_image_url
+                # 清除已处理的思考过程
+                self.current_agent_thoughts[conversation_id] = []
 
-            if url:
-                # Handle relative paths
-                if model_config and url.startswith('/files'):
-                    base_url = model_config.base_url.replace('/v1', '')
-                    url = f"{base_url}{url}"
-                    logger.info(f"转换相对路径为完整URL: {url}")
+        # 匹配Dify返回的Markdown链接格式 [文件名](URL) 和 ![文件名](URL)
+        link_pattern = r'!?\[(.*?)\]\((.*?)\)'
+        matches = re.findall(link_pattern, text)
 
-                try:
-                    # 处理URL，移除查询参数以确保正确提取文件扩展名
-                    parsed_url = urllib.parse.urlparse(url)
-                    path = parsed_url.path
-                    file_extension = os.path.splitext(path.lower())[1]
-                    
-                    logger.debug(f"文件URL路径: {path}, 提取的扩展名: {file_extension}")
-                    
-                    # 检查URL中的文件扩展名或路径是否包含视频格式标识
-                    is_video = (file_extension in ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.mpeg', '.mpga', '.webm'] or 
-                              any(ext in path.lower() for ext in ['mp4', 'mov', 'avi', 'mkv', 'flv', 'mpeg', 'mpga', 'webm']))
-                    
-                    if is_video:
-                        # It's a video link
-                        logger.info(f"检测到视频链接: {url}")
-                        # Reuse the download_and_send_file logic for videos
-                        await self.download_and_send_file(bot, message, url)
-                        logger.info(f"成功发送视频: {alt_text}")
-                    elif image_url is not None or file_extension in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']:
-                        # It's an image link (either ![]() or []() pointing to an image extension)
-                        logger.info(f"检测到图片链接: {url}")
-                        # 使用带有随机User-Agent和Referer的下载方法
-                        image_data = await self.download_file(url)
-                        if image_data:
-                            try:
-                                # 检查是否为webp格式图片并进行转换
-                                is_webp = file_extension.lower() == '.webp' or 'webp' in url.lower()
-                                if is_webp:
-                                    logger.info("检测到webp格式图片，尝试转换为jpg格式")
-                                    try:
-                                        # 允许加载截断的图片
-                                        from PIL import ImageFile
-                                        ImageFile.LOAD_TRUNCATED_IMAGES = True
-                                        
-                                        # 打开图片
-                                        img = Image.open(io.BytesIO(image_data))
-                                        
-                                        # 确保图片为RGB模式
-                                        if img.mode in ('RGBA', 'LA', 'P'):
-                                            logger.info(f"转换图片模式从 {img.mode} 到 RGB")
-                                            background = Image.new('RGB', img.size, (255, 255, 255))
-                                            if img.mode == 'P':
-                                                img = img.convert('RGBA')
-                                            background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-                                            img = background
-                                        elif img.mode != 'RGB':
-                                            img = img.convert('RGB')
-                                        
-                                        # 保存为JPEG
-                                        output = io.BytesIO()
-                                        img.save(output, format='JPEG', quality=95, optimize=True)
-                                        output.seek(0)
-                                        image_data = output.getvalue()
-                                        logger.info(f"webp转jpg成功，转换后大小: {len(image_data)} 字节")
-                                    except Exception as e:
-                                        logger.error(f"webp转jpg失败: {e}")
-                                        logger.error(traceback.format_exc())
-                                        # 继续使用原始数据
-                                
-                                # 发送图片
-                                await bot.send_image_message(message["FromWxid"], image_data)
-                                logger.info(f"成功发送图片: {alt_text}")
-                            except Exception as e:
-                                logger.error(f"处理或发送图片失败: {e}")
-                                logger.error(traceback.format_exc())
-                                await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
-                        else:
-                            logger.error(f"下载图片失败: {url}")
-                            await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
-                    # Add other file types here if needed
-                    else:
-                        # Not a recognized image or video, send the link as text
-                        logger.info(f"检测到其他类型链接，发送文本: {url}")
-                        await bot.send_text_message(message["FromWxid"], f"[{alt_text}]({url})") # Send original markdown
-                except Exception as e:
-                    logger.error(f"处理链接失败: {e}")
-                    logger.error(traceback.format_exc())
-                    # Send a text message indicating link processing failure
-                    await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+        # 记录所有找到的链接
+        if matches:
+            logger.info(f"[文件处理] 在回复中找到 {len(matches)} 个文件链接")
+            for i, (filename, url) in enumerate(matches):
+                logger.info(f"[文件处理] 链接 {i+1}: 文件名='{filename}', URL='{url}'")
 
-            last_pos = end_pos
+        # 移除所有链接文本，以免重复显示
+        text = re.sub(link_pattern, '', text)
 
-        # Remaining text after the last link
-        remaining_text = text[last_pos:].strip()
-        if remaining_text:
-            # Send remaining text
-            if "//n" in remaining_text:
-                parts = remaining_text.split("//n")
-                for part in parts:
-                    cleaned_part = part.strip()
-                    if cleaned_part:
-                        await bot.send_text_message(message["FromWxid"], cleaned_part)
+        # 先发送文字内容
+        if text:
+            # 检查是否需要发送语音消息
+            if message["MsgType"] == 34 or self.voice_reply_all:
+                # 获取消息ID，如果有的话
+                agent_message_id = None
+                if self.support_agent_mode and conversation_id in self.current_agent_thoughts:
+                    thoughts = self.current_agent_thoughts[conversation_id]
+                    if thoughts and thoughts[-1].get("message_id"):
+                        agent_message_id = thoughts[-1].get("message_id")
+                        logger.debug(f"找到Agent消息ID: {agent_message_id}，将用于文本转语音")
+
+                # 使用message_id或text调用文本转语音
+                await self.text_to_voice_message(bot, message, text=text, message_id=agent_message_id)
             else:
-                await bot.send_text_message(message["FromWxid"], remaining_text)
+                # 使用 //n 作为分隔符进行分段发送
+                paragraphs = text.split("//n")
+                logger.info(f"检测到 //n 分隔符，将消息分为 {len(paragraphs)} 段发送")
+
+                # 不再使用引用消息，直接使用普通文本回复
+                # 这些变量保留但不再使用
+                quoted_msg_id = ""
+                quoted_wxid = ""
+                quoted_content = ""
+                quoted_nickname = ""
+                should_quote = False  # 始终设置为False，不使用引用回复
+
+                logger.info("使用普通文本回复，不使用引用回复")
+
+                for i, paragraph in enumerate(paragraphs):
+                    if paragraph.strip():
+                        logger.debug(f"发送第 {i+1}/{len(paragraphs)} 段消息，长度: {len(paragraph.strip())} 字符")
+
+                        # 直接发送普通文本消息，不使用引用回复
+                        await bot.send_text_message(message["FromWxid"], paragraph.strip())
+
+                        # 添加短暂延迟，避免消息发送过快
+                        if i < len(paragraphs) - 1:  # 如果不是最后一段
+                            await asyncio.sleep(0.5)  # 添加0.5秒延迟
+
+        # 处理所有找到的链接
+        for filename, url in matches:
+            try:
+                # 如果URL是相对路径,添加base_url
+                if url.startswith('/files') or url.startswith('./files'):
+                    # 移除base_url中可能的v1路径
+                    base_url = model.base_url.replace('/v1', '')
+                    if url.startswith('./'):
+                        url = url[1:]  # 移除开头的点
+                    url = f"{base_url}{url}"
+
+                logger.info(f"[文件处理] 开始下载文件: {filename}, URL: {url}")
+
+                # 设置请求头
+                headers = {"Authorization": f"Bearer {model.api_key}"}
+
+                # 下载文件
+                async with aiohttp.ClientSession(proxy=self.http_proxy) as session:
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            # 获取内容类型
+                            content_type = resp.headers.get('Content-Type', '')
+                            logger.info(f"[文件处理] 下载成功: 状态码={resp.status}, 内容类型={content_type}")
+
+                            # 读取文件内容
+                            file_content = await resp.read()
+                            logger.info(f"[文件处理] 文件大小: {len(file_content)} 字节")
+
+                            # 保存一份用于调试
+                            debug_file = f"debug_file_{int(time.time())}_{os.path.basename(url)}"
+                            try:
+                                with open(debug_file, "wb") as f:
+                                    f.write(file_content)
+                                logger.info(f"[文件处理] 已保存调试文件: {debug_file}")
+                            except Exception as save_error:
+                                logger.error(f"[文件处理] 保存调试文件失败: {save_error}")
+
+                            # 根据内容类型或文件扩展名确定文件类型
+                            file_type = None
+
+                            # 首先尝试使用文件内容检测类型
+                            kind = filetype.guess(file_content)
+                            if kind:
+                                file_type = kind.mime
+                                ext = kind.extension
+                                logger.info(f"[文件处理] 通过内容检测到文件类型: {file_type}, 扩展名: {ext}")
+                            else:
+                                # 尝试从Content-Type头获取
+                                if content_type and content_type != 'application/octet-stream':
+                                    file_type = content_type
+                                    ext = mimetypes.guess_extension(content_type)
+                                    if ext:
+                                        ext = ext.lstrip('.')
+                                    else:
+                                        ext = ""
+                                    logger.info(f"[文件处理] 从Content-Type获取文件类型: {file_type}, 扩展名: {ext}")
+                                else:
+                                    # 尝试从文件名获取扩展名
+                                    ext = os.path.splitext(filename)[1].lower().lstrip('.')
+                                    if not ext and '.' in url:
+                                        ext = os.path.splitext(url)[1].lower().lstrip('.')
+
+                                    if ext:
+                                        file_type = mimetypes.guess_type(f"file.{ext}")[0]
+                                        logger.info(f"[文件处理] 从文件名获取类型: {file_type}, 扩展名: {ext}")
+                                    else:
+                                        # 无法确定类型
+                                        file_type = 'application/octet-stream'
+                                        ext = 'bin'
+                                        logger.warning(f"[文件处理] 无法确定文件类型，使用默认值: {file_type}")
+
+                            # 创建临时目录用于处理文件
+                            temp_dir = os.path.join(os.getcwd(), "temp")
+                            os.makedirs(temp_dir, exist_ok=True)
+                            temp_filename = os.path.join(temp_dir, f"{int(time.time())}_{filename}")
+
+                            try:
+                                # 保存临时文件
+                                with open(temp_filename, "wb") as f:
+                                    f.write(file_content)
+                                logger.debug(f"[文件处理] 已保存临时文件: {temp_filename}")
+
+                                # 根据文件类型发送不同类型的消息
+                                if file_type and (file_type.startswith('audio/') or ext in ('wav', 'mp3', 'ogg', 'm4a', 'amr')):
+                                    # 音频文件
+                                    logger.info(f"[文件处理] 检测到音频文件，发送语音消息")
+
+                                    # 对于音频文件，可能需要转换格式
+                                    try:
+                                        # 检查是否有ffmpeg
+                                        if shutil.which("ffmpeg"):
+                                            # 转换为mp3格式，这是微信支持较好的格式
+                                            mp3_file = f"{temp_filename}.mp3"
+                                            command = f'ffmpeg -y -i "{temp_filename}" -acodec libmp3lame -ar 44100 -ab 192k "{mp3_file}"'
+                                            logger.debug(f"[文件处理] 执行音频转换命令: {command}")
+
+                                            process = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                                            if process.returncode == 0:
+                                                logger.info(f"[文件处理] 音频转换成功: {mp3_file}")
+
+                                                # 读取转换后的文件
+                                                with open(mp3_file, "rb") as f:
+                                                    converted_audio = f.read()
+
+                                                # 发送转换后的音频
+                                                await bot.send_voice_message(message["FromWxid"], voice=converted_audio, format="mp3")
+                                                logger.info(f"[文件处理] 发送转换后的语音消息成功")
+
+                                                # 删除转换后的文件
+                                                try:
+                                                    os.remove(mp3_file)
+                                                    logger.debug(f"[文件处理] 已删除转换后的音频文件: {mp3_file}")
+                                                except Exception as del_error:
+                                                    logger.debug(f"[文件处理] 删除转换后的音频文件失败: {del_error}")
+                                            else:
+                                                logger.warning(f"[文件处理] 音频转换失败: {process.stderr}")
+                                                # 尝试直接发送原始音频
+                                                await bot.send_voice_message(message["FromWxid"], voice=file_content, format=ext or 'mp3')
+                                                logger.info(f"[文件处理] 发送原始语音消息成功")
+                                        else:
+                                            logger.warning("[文件处理] 未找到ffmpeg，直接发送原始音频")
+                                            await bot.send_voice_message(message["FromWxid"], voice=file_content, format=ext or 'mp3')
+                                            logger.info(f"[文件处理] 发送原始语音消息成功")
+                                    except Exception as audio_error:
+                                        logger.error(f"[文件处理] 处理音频文件失败: {audio_error}")
+                                        logger.error(traceback.format_exc())
+                                        # 尝试直接发送原始音频
+                                        await bot.send_voice_message(message["FromWxid"], voice=file_content, format=ext or 'mp3')
+                                        logger.info(f"[文件处理] 尝试直接发送原始语音消息")
+
+                                elif file_type and (file_type.startswith('image/') or ext in ('jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg')):
+                                    # 图片文件
+                                    logger.info(f"[文件处理] 检测到图片文件，发送图片消息")
+                                    await bot.send_image_message(message["FromWxid"], file_content)
+                                    logger.info(f"[文件处理] 发送图片消息成功")
+
+                                elif file_type and (file_type.startswith('video/') or ext in ('mp4', 'avi', 'mov', 'mkv', 'flv', 'webm')):
+                                    # 视频文件
+                                    logger.info(f"[文件处理] 检测到视频文件，发送视频消息")
+                                    await bot.send_video_message(message["FromWxid"], video=file_content, image="None")
+                                    logger.info(f"[文件处理] 发送视频消息成功")
+
+                                else:
+                                    # 其他类型文件，不做处理
+                                    logger.info(f"[文件处理] 检测到其他类型文件: {file_type}，不做处理")
+
+                            except Exception as e:
+                                logger.error(f"[文件处理] 处理文件失败: {e}")
+                                logger.error(traceback.format_exc())
+
+                            finally:
+                                # 无论成功与否，都删除临时文件
+                                try:
+                                    if os.path.exists(temp_filename):
+                                        os.remove(temp_filename)
+                                        logger.debug(f"[文件处理] 已删除临时文件: {temp_filename}")
+                                except Exception as del_error:
+                                    logger.debug(f"[文件处理] 删除临时文件失败: {del_error}")
+                        else:
+                            error_text = await resp.text()
+                            logger.error(f"[文件处理] 下载失败: 状态码={resp.status}, 错误={error_text}")
+            except Exception as e:
+                logger.error(f"[文件处理] 处理文件链接失败: {e}")
+                logger.error(traceback.format_exc())
+
+        # 处理可能的其他格式链接 - 由于我们已经处理了标准格式的链接，这部分可以简化
+        other_pattern = r'!?\]\((https?:\/\/[^\s\)]+)\)'
+        other_links = re.findall(other_pattern, text)
+        if other_links:
+            logger.debug(f"[文件处理] 发现其他格式链接: {other_links}")
+            # 不再处理这些链接，因为主要的链接已经在前面处理过了
+
+        # 识别普通文件链接 - 简化处理
+        file_pattern = r'https?://[^\s<>"]+?/[^\s<>"]+\.(?:pdf|doc|docx|xls|xlsx|txt|zip|rar|7z|tar|gz)'
+        file_links = re.findall(file_pattern, text)
+        if file_links:
+            logger.debug(f"[文件处理] 发现普通文件链接: {file_links}")
+            # 不再处理这些链接，因为主要的链接已经在前面处理过了
+
+        pattern = r'\$\$[^$$]+\]\$\$https?:\/\/[^\s$$]+\)'
+        text = re.sub(pattern, '', text)
 
     async def dify_handle_image(self, bot: WechatAPIClient, message: dict, image: Union[str, bytes], model_config=None):
         try:
@@ -2381,32 +2198,35 @@ class Dify(PluginBase):
             if isinstance(image, str) and image.startswith("http"):
                 try:
                     logger.info(f"从URL下载图片: {image}")
-                    # 使用带有随机User-Agent和Referer的下载方法
-                    image_content = await self.download_file(image)
-                    if image_content:
-                        logger.info(f"成功从URL下载图片，大小: {len(image_content)} 字节")
+                    async with aiohttp.ClientSession() as session:
+                        # 正确的方式是在请求时设置代理，而不是在创建会话时
+                        proxy = self.http_proxy if self.http_proxy and self.http_proxy.strip() else None
+                        async with session.get(image, proxy=proxy) as resp:
+                            if resp.status == 200:
+                                image_content = await resp.read()
+                                logger.info(f"成功从URL下载图片，大小: {len(image_content)} 字节")
 
-                        # 对于群聊消息，使用群聊ID作为user参数，这样对话会与群聊关联，而不是与个人关联
-                        user_id = message["FromWxid"] if message.get("IsGroup", False) else message["SenderWxid"]
+                                # 对于群聊消息，使用群聊ID作为user参数，这样对话会与群聊关联，而不是与个人关联
+                                user_id = message["FromWxid"] if message.get("IsGroup", False) else message["SenderWxid"]
 
-                        # 上传到 Dify
-                        file_info = await self.upload_file_to_dify(
-                            image_content,
-                            f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
-                            "image/jpeg",  # 根据实际图片类型调整
-                            user_id,  # 使用正确的用户ID
-                            model_config=model_config  # 传递模型配置
-                        )
-                        if file_info:
-                            logger.info(f"图片上传成功，文件ID: {file_info['id']}, 类型: {file_info['type']}")
-                    else:
-                        logger.error(f"下载图片失败: {image}")
-                        await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
-                        return
+                                # 上传到 Dify
+                                file_info = await self.upload_file_to_dify(
+                                    image_content,
+                                    f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
+                                    "image/jpeg",  # 根据实际图片类型调整
+                                    user_id,  # 使用正确的用户ID
+                                    model_config=model_config  # 传递模型配置
+                                )
+                                if file_info:
+                                    logger.info(f"图片上传成功，文件ID: {file_info['id']}, 类型: {file_info['type']}")
+                            else:
+                                logger.error(f"下载图片失败: HTTP {resp.status}")
+                                await bot.send_text_message(message["FromWxid"], f"下载图片失败: HTTP {resp.status}")
+                                return
                 except Exception as e:
                     logger.error(f"下载图片 {image} 失败: {e}")
                     logger.error(traceback.format_exc())
-                    await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                    await bot.send_text_message(message["FromWxid"], f"下载图片 {image} 失败: {str(e)}")
                     return
             elif isinstance(image, bytes):
                 logger.info(f"处理二进制图片数据，大小: {len(image)} 字节")
@@ -2427,13 +2247,13 @@ class Dify(PluginBase):
                     logger.info(f"图片上传成功，文件ID: {file_info['id']}, 类型: {file_info['type']}")
             else:
                 logger.error(f"不支持的图片类型: {type(image)}")
-                await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                await bot.send_text_message(message["FromWxid"], f"不支持的图片类型: {type(image)}")
                 return
 
             # 确保我们有图片内容
             if not image_content:
                 logger.error("图片内容为空，无法发送")
-                await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                await bot.send_text_message(message["FromWxid"], "图片内容为空，无法发送")
                 return
 
             # 验证图片数据
@@ -2445,19 +2265,11 @@ class Dify(PluginBase):
                 # 验证图片数据
                 img = Image.open(io.BytesIO(image_content))
                 logger.info(f"图片验证成功，格式: {img.format}, 大小: {img.size}, 模式: {img.mode}")
-                
-                # 检查是否需要转换webp格式
-                is_webp = img.format == 'WEBP' or (isinstance(image, str) and image.lower().endswith('.webp'))
-                needs_conversion = False
-                
+
                 # 检查图片大小，如果太大则调整大小
                 width, height = img.size
                 max_dimension = 1600  # 最大尺寸限制
-                
-                if is_webp:
-                    logger.info("检测到webp格式图片，将转换为jpg格式")
-                    needs_conversion = True
-                
+
                 if width > max_dimension or height > max_dimension:
                     # 计算缩放比例
                     ratio = min(max_dimension / width, max_dimension / height)
@@ -2465,21 +2277,14 @@ class Dify(PluginBase):
                     new_height = int(height * ratio)
                     logger.info(f"图片尺寸过大，调整大小从 {width}x{height} 到 {new_width}x{new_height}")
                     img = img.resize((new_width, new_height), Image.LANCZOS)
-                    needs_conversion = True
-                
-                # 转换图片格式或模式
-                if needs_conversion or img.mode in ('RGBA', 'LA', 'P'):
-                    # 确保图片为RGB模式
-                    if img.mode in ('RGBA', 'LA', 'P'):
-                        logger.info(f"转换图片模式从 {img.mode} 到 RGB")
+
+                    # 转换为RGB模式(去除alpha通道)
+                    if img.mode in ('RGBA', 'LA'):
+                        logger.debug(f"图片包含alpha通道，转换为RGB模式")
                         background = Image.new('RGB', img.size, (255, 255, 255))
-                        if img.mode == 'P':
-                            img = img.convert('RGBA')
-                        background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                        background.paste(img, mask=img.split()[-1])
                         img = background
-                    elif img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    
+
                     # 保存为JPEG
                     output = io.BytesIO()
                     img.save(output, format='JPEG', quality=95, optimize=True)
@@ -2498,26 +2303,42 @@ class Dify(PluginBase):
         except Exception as e:
             logger.error(f"处理图片失败: {e}")
             logger.error(traceback.format_exc())
-            await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+            await bot.send_text_message(message["FromWxid"], f"处理图片失败: {str(e)}")
 
     @staticmethod
     async def dify_handle_error(bot: WechatAPIClient, message: dict, task_id: str, message_id: str, status: str,
                                 code: int, err_message: str):
-       await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+        output = (XYBOT_PREFIX +
+                  DIFY_ERROR_MESSAGE +
+                  f"任务 ID：{task_id}\n"
+                  f"消息唯一 ID：{message_id}\n"
+                  f"HTTP 状态码：{status}\n"
+                  f"错误码：{code}\n"
+                  f"错误信息：{err_message}")
+        await bot.send_text_message(message["FromWxid"], output)
 
 
 
     @staticmethod
     async def handle_500(bot: WechatAPIClient, message: dict):
-        await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+        output = XYBOT_PREFIX + "🙅对不起，Dify服务内部异常，请稍后再试。"
+        await bot.send_text_message(message["FromWxid"], output)
 
     @staticmethod
     async def handle_other_status(bot: WechatAPIClient, message: dict, resp: aiohttp.ClientResponse):
-       await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+        ai_resp = (XYBOT_PREFIX +
+                   f"🙅对不起，出现错误！\n"
+                   f"状态码：{resp.status}\n"
+                   f"错误信息：{(await resp.content.read()).decode('utf-8')}")
+        await bot.send_text_message(message["FromWxid"], ai_resp)
 
     @staticmethod
     async def handle_exceptions(bot: WechatAPIClient, message: dict, model_config=None):
-       await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+        output = (XYBOT_PREFIX +
+                  "🙅对不起，出现错误！\n"
+                  f"错误信息：\n"
+                  f"{traceback.format_exc()}")
+        await bot.send_text_message(message["FromWxid"], output)
 
     async def _check_point(self, bot: WechatAPIClient, message: dict, model_config=None) -> bool:
         wxid = message["SenderWxid"]
@@ -2529,7 +2350,7 @@ class Dify(PluginBase):
             if self.db.get_points(wxid) < (model_config or self.current_model).price:
                 await bot.send_text_message(message["FromWxid"],
                                             XYBOT_PREFIX +
-                                            "抱歉，ai助手遇到一点问题，请稍后重试！")
+                                            INSUFFICIENT_POINTS_MESSAGE.format(price=(model_config or self.current_model).price))
                 return False
             self.db.add_points(wxid, -((model_config or self.current_model).price))
             return True
@@ -2537,7 +2358,7 @@ class Dify(PluginBase):
     async def audio_to_text(self, bot: WechatAPIClient, message: dict) -> str:
         if not shutil.which("ffmpeg"):
             logger.error("未找到ffmpeg，请安装并配置到环境变量")
-            await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+            await bot.send_text_message(message["FromWxid"], "服务器缺少ffmpeg，无法处理语音")
             return ""
 
         silk_file = "temp_audio.silk"
@@ -2630,7 +2451,7 @@ class Dify(PluginBase):
                 logger.debug(f"使用text进行文本转语音: {text[:50]}..." if len(text) > 50 else f"使用text进行文本转语音: {text}")
             else:
                 logger.error("文本转语音失败: 未提供text或message_id参数")
-                await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                await bot.send_text_message(message["FromWxid"], f"{TEXT_TO_VOICE_FAILED}: 未提供文本内容或消息ID")
                 return
 
             async with aiohttp.ClientSession(proxy=self.http_proxy) as session:
@@ -2642,11 +2463,11 @@ class Dify(PluginBase):
                     else:
                         error_text = await resp.text()
                         logger.error(f"text-to-audio 接口调用失败: {resp.status} - {error_text}")
-                        await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                        await bot.send_text_message(message["FromWxid"], f"{TEXT_TO_VOICE_FAILED}: 状态码 {resp.status}")
         except Exception as e:
             logger.error(f"text-to-audio 接口调用异常: {e}")
             logger.error(traceback.format_exc())
-            await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+            await bot.send_text_message(message["FromWxid"], f"{TEXT_TO_VOICE_FAILED}: {str(e)}")
 
     @on_image_message(priority=20)
     async def handle_image(self, bot: WechatAPIClient, message: dict):
@@ -2802,74 +2623,19 @@ class Dify(PluginBase):
             # 如果成功获取图片内容，则缓存
             if image_content:
                 # 缓存图片到发送者和收件人的ID
-                timestamp = time.time()
-                
-                if self.persistent_cache:
-                    # 为缓存图片生成唯一文件名
-                    cache_filename = f"{sender_wxid}_{int(timestamp)}_{uuid.uuid4().hex[:8]}.jpg"
-                    cache_path = os.path.join(self.image_cache_dir, cache_filename)
-                    
-                    try:
-                        # 保存图片到缓存目录
-                        with open(cache_path, 'wb') as f:
-                            f.write(image_content)
-                        
-                        # 更新缓存索引
-                        self.image_cache[sender_wxid] = {
-                            "timestamp": timestamp,
-                            "file_name": cache_filename,
-                            "md5": md5(image_content).hexdigest() if hashlib else None
-                        }
-                        
-                        # 如果是私聊，也缓存到聊天对象的ID
-                        if from_wxid != sender_wxid:
-                            # 为聊天对象创建软链接或复制文件
-                            other_cache_filename = f"{from_wxid}_{int(timestamp)}_{uuid.uuid4().hex[:8]}.jpg"
-                            other_cache_path = os.path.join(self.image_cache_dir, other_cache_filename)
-                            
-                            # 复制文件
-                            shutil.copy2(cache_path, other_cache_path)
-                            
-                            self.image_cache[from_wxid] = {
-                                "timestamp": timestamp,
-                                "file_name": other_cache_filename,
-                                "md5": md5(image_content).hexdigest() if hashlib else None
-                            }
-                        
-                        # 保存索引
-                        self._save_cache_index()
-                        
-                        logger.info(f"已缓存用户 {sender_wxid} 的图片到本地: {cache_path}")
-                        if from_wxid != sender_wxid:
-                            logger.info(f"已缓存聊天对象 {from_wxid} 的图片到本地")
-                    except Exception as e:
-                        logger.error(f"保存图片到本地缓存失败: {e}")
-                        # 回退到内存缓存
-                        self.image_cache[sender_wxid] = {
-                            "content": image_content,
-                            "timestamp": timestamp
-                        }
-                        
-                        if from_wxid != sender_wxid:
-                            self.image_cache[from_wxid] = {
-                                "content": image_content,
-                                "timestamp": timestamp
-                            }
-                else:
-                    # 内存缓存
-                    self.image_cache[sender_wxid] = {
-                        "content": image_content,
-                        "timestamp": timestamp
-                    }
-                    logger.info(f"已缓存用户 {sender_wxid} 的图片到内存")
+                self.image_cache[sender_wxid] = {
+                    "content": image_content,
+                    "timestamp": time.time()
+                }
+                logger.info(f"已缓存用户 {sender_wxid} 的图片")
 
-                    # 如果是私聊，也缓存到聊天对象的ID
-                    if from_wxid != sender_wxid:
-                        self.image_cache[from_wxid] = {
-                            "content": image_content,
-                            "timestamp": timestamp
-                        }
-                        logger.info(f"已缓存聊天对象 {from_wxid} 的图片到内存")
+                # 如果是私聊，也缓存到聊天对象的ID
+                if from_wxid != sender_wxid:
+                    self.image_cache[from_wxid] = {
+                        "content": image_content,
+                        "timestamp": time.time()
+                    }
+                    logger.info(f"已缓存聊天对象 {from_wxid} 的图片")
             else:
                 logger.warning(f"未能获取图片内容，无法缓存")
 
@@ -2888,31 +2654,12 @@ class Dify(PluginBase):
 
             if cache_age <= self.image_cache_timeout:
                 try:
-                    # 根据缓存类型获取图片内容
-                    if self.persistent_cache and "file_name" in cache_data:
-                        # 从本地文件获取内容
-                        cache_path = os.path.join(self.image_cache_dir, cache_data["file_name"])
-                        if os.path.exists(cache_path):
-                            with open(cache_path, 'rb') as f:
-                                image_content = f.read()
-                            logger.info(f"从本地缓存读取图片: {cache_path}, 大小: {len(image_content)} 字节")
-                        else:
-                            logger.error(f"本地缓存图片不存在: {cache_path}")
-                            del self.image_cache[user_wxid]
-                            self._save_cache_index()
-                            return None
-                    else:
-                        # 从内存获取内容
-                        if "content" not in cache_data:
-                            logger.error("缓存数据中没有图片内容")
-                            del self.image_cache[user_wxid]
-                            return None
-                            
-                        image_content = cache_data["content"]
-                        if not isinstance(image_content, bytes):
-                            logger.error("缓存的图片内容不是二进制格式")
-                            del self.image_cache[user_wxid]
-                            return None
+                    # 确保我们有有效的二进制数据
+                    image_content = cache_data["content"]
+                    if not isinstance(image_content, bytes):
+                        logger.error("缓存的图片内容不是二进制格式")
+                        del self.image_cache[user_wxid]
+                        return None
 
                     # 尝试验证图片数据
                     try:
@@ -2921,41 +2668,21 @@ class Dify(PluginBase):
                     except Exception as e:
                         logger.error(f"缓存的图片数据无效: {e}")
                         del self.image_cache[user_wxid]
-                        if self.persistent_cache:
-                            self._save_cache_index()
                         return None
 
+                    # 不再删除缓存，而是在上传成功后删除
                     # 更新时间戳，避免过早超时
                     self.image_cache[user_wxid]["timestamp"] = current_time
-                    if self.persistent_cache:
-                        self._save_cache_index()
-                        
-                    logger.info(f"成功获取用户 {user_wxid} 的缓存图片, 大小: {len(image_content)} 字节")
+                    logger.info(f"成功获取用户 {user_wxid} 的缓存图片")
                     return image_content
                 except Exception as e:
                     logger.error(f"处理缓存图片失败: {e}")
-                    logger.error(traceback.format_exc())
                     del self.image_cache[user_wxid]
-                    if self.persistent_cache:
-                        self._save_cache_index()
                     return None
             else:
                 # 超时清除
                 logger.debug(f"缓存图片超时，已清除")
-                
-                # 如果是持久化缓存，删除本地文件
-                if self.persistent_cache and "file_name" in cache_data:
-                    try:
-                        cache_path = os.path.join(self.image_cache_dir, cache_data["file_name"])
-                        if os.path.exists(cache_path):
-                            os.remove(cache_path)
-                            logger.debug(f"删除过期缓存图片: {cache_path}")
-                    except Exception as e:
-                        logger.error(f"删除过期缓存图片失败: {e}")
-                
                 del self.image_cache[user_wxid]
-                if self.persistent_cache:
-                    self._save_cache_index()
         else:
             logger.debug(f"未找到用户 {user_wxid} 的缓存图片")
         return None
@@ -2999,277 +2726,103 @@ class Dify(PluginBase):
 
             if cache_age <= self.file_cache_timeout:
                 try:
+                    # 确保我们有有效的二进制数据
+                    file_content = cache_data["content"]
                     file_name = cache_data["name"]
                     mime_type = cache_data["mime_type"]
-                    
-                    # 根据缓存类型获取文件内容
-                    if self.persistent_cache and "file_name" in cache_data:
-                        # 从本地文件获取内容
-                        cache_path = os.path.join(self.file_cache_dir, cache_data["file_name"])
-                        if os.path.exists(cache_path):
-                            with open(cache_path, 'rb') as f:
-                                file_content = f.read()
-                            logger.info(f"从本地缓存读取文件: {cache_path}, 大小: {len(file_content)} 字节")
-                        else:
-                            logger.error(f"本地缓存文件不存在: {cache_path}")
-                            del self.file_cache[user_wxid]
-                            self._save_cache_index()
-                            return None
-                    else:
-                        # 从内存获取内容
-                        if "content" not in cache_data:
-                            logger.error("缓存数据中没有文件内容")
-                            del self.file_cache[user_wxid]
-                            return None
-                            
-                        file_content = cache_data["content"]
-                        
-                        # 处理不同类型的文件内容
-                        if isinstance(file_content, bytearray):
-                            # 将 bytearray 转换为 bytes
-                            file_content = bytes(file_content)
-                            logger.info(f"将 bytearray 转换为 bytes，大小: {len(file_content)} 字节")
-                        elif isinstance(file_content, str):
-                            # 尝试将字符串解析为 base64
-                            try:
-                                file_content = base64.b64decode(file_content)
-                                logger.info(f"将 base64 字符串转换为 bytes，大小: {len(file_content)} 字节")
-                            except Exception as e:
-                                logger.error(f"Base64 解码失败: {e}")
-                                file_content = file_content.encode('utf-8')
-                                logger.info(f"将普通字符串转换为 bytes，大小: {len(file_content)} 字节")
-                        elif not isinstance(file_content, bytes):
-                            logger.error(f"缓存的文件内容不是支持的格式: {type(file_content)}")
-                            del self.file_cache[user_wxid]
-                            return None
-                        
-                        # 更新缓存中的文件内容
-                        self.file_cache[user_wxid]["content"] = file_content
+
+                    # 处理不同类型的文件内容
+                    if isinstance(file_content, bytearray):
+                        # 将 bytearray 转换为 bytes
+                        file_content = bytes(file_content)
+                        logger.info(f"将 bytearray 转换为 bytes，大小: {len(file_content)} 字节")
+                    elif isinstance(file_content, str):
+                        # 尝试将字符串解析为 base64
+                        try:
+                            file_content = base64.b64decode(file_content)
+                            logger.info(f"将 base64 字符串转换为 bytes，大小: {len(file_content)} 字节")
+                        except Exception as e:
+                            logger.error(f"Base64 解码失败: {e}")
+                            file_content = file_content.encode('utf-8')
+                            logger.info(f"将普通字符串转换为 bytes，大小: {len(file_content)} 字节")
+                    elif not isinstance(file_content, bytes):
+                        logger.error(f"缓存的文件内容不是支持的格式: {type(file_content)}")
+                        del self.file_cache[user_wxid]
+                        return None
+
+                    # 更新缓存中的文件内容
+                    self.file_cache[user_wxid]["content"] = file_content
 
                     # 更新时间戳，避免过早超时
                     self.file_cache[user_wxid]["timestamp"] = current_time
-                    if self.persistent_cache:
-                        self._save_cache_index()
-                        
                     logger.info(f"成功获取用户 {user_wxid} 的缓存文件: {file_name}, 大小: {len(file_content)} 字节")
                     return (file_content, file_name, mime_type)
                 except Exception as e:
                     logger.error(f"处理缓存文件失败: {e}")
-                    logger.error(traceback.format_exc())
                     del self.file_cache[user_wxid]
-                    if self.persistent_cache:
-                        self._save_cache_index()
                     return None
             else:
                 # 超时清除
                 logger.debug(f"缓存文件超时，已清除")
-                
-                # 如果是持久化缓存，删除本地文件
-                if self.persistent_cache and "file_name" in cache_data:
-                    try:
-                        cache_path = os.path.join(self.file_cache_dir, cache_data["file_name"])
-                        if os.path.exists(cache_path):
-                            os.remove(cache_path)
-                            logger.debug(f"删除过期缓存文件: {cache_path}")
-                    except Exception as e:
-                        logger.error(f"删除过期缓存文件失败: {e}")
-                
                 del self.file_cache[user_wxid]
-                if self.persistent_cache:
-                    self._save_cache_index()
         else:
             logger.debug(f"未找到用户 {user_wxid} 的缓存文件")
         return None
 
     def cache_file(self, user_wxid: str, file_content: bytes, file_name: str, mime_type: str) -> None:
         """缓存用户文件"""
-        timestamp = time.time()
-        
-        if self.persistent_cache:
-            # 为缓存文件生成唯一文件名
-            cache_filename = f"{user_wxid}_{int(timestamp)}_{uuid.uuid4().hex[:8]}{os.path.splitext(file_name)[1]}"
-            cache_path = os.path.join(self.file_cache_dir, cache_filename)
-            
-            try:
-                # 保存文件到缓存目录
-                with open(cache_path, 'wb') as f:
-                    f.write(file_content)
-                
-                # 更新缓存索引
-                self.file_cache[user_wxid] = {
-                    "name": file_name,
-                    "mime_type": mime_type,
-                    "timestamp": timestamp,
-                    "file_name": cache_filename
-                }
-                
-                # 保存索引
-                self._save_cache_index()
-                
-                logger.info(f"已缓存用户 {user_wxid} 的文件到本地: {cache_path}, 原文件名: {file_name}, 大小: {len(file_content)} 字节")
-            except Exception as e:
-                logger.error(f"保存文件到本地缓存失败: {e}")
-                # 回退到内存缓存
-                self.file_cache[user_wxid] = {
-                    "content": file_content,
-                    "name": file_name,
-                    "mime_type": mime_type,
-                    "timestamp": timestamp
-                }
-        else:
-            # 内存缓存
-            self.file_cache[user_wxid] = {
-                "content": file_content,
-                "name": file_name,
-                "mime_type": mime_type,
-                "timestamp": timestamp
-            }
-            logger.info(f"已缓存用户 {user_wxid} 的文件到内存: {file_name}, 大小: {len(file_content)} 字节")
+        self.file_cache[user_wxid] = {
+            "content": file_content,
+            "name": file_name,
+            "mime_type": mime_type,
+            "timestamp": time.time()
+        }
+        logger.info(f"已缓存用户 {user_wxid} 的文件: {file_name}, 大小: {len(file_content)} 字节")
 
     async def download_and_send_file(self, bot: WechatAPIClient, message: dict, url: str):
         """下载并发送文件"""
         try:
-            # 从URL中获取文件名，去掉查询参数
+            # 从URL中获取文件名
             parsed_url = urllib.parse.urlparse(url)
-            path = parsed_url.path
-            filename = os.path.basename(path)
+            filename = os.path.basename(parsed_url.path)
             if not filename:
                 filename = f"downloaded_file_{int(time.time())}"
-                
-            # 检查URL路径是否包含视频扩展名
-            is_video_url = any(ext in path.lower() for ext in ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.mpeg', '.mpga', '.webm'])
-            
-            logger.info(f"开始下载文件: {url}, 文件名: {filename}, 是否视频URL: {is_video_url}")
+
+            logger.info(f"开始下载文件: {url}")
 
             # 使用改进后的download_file方法
             content = await self.download_file(url)
             if not content:
-                await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                await bot.send_text_message(message["FromWxid"], f"下载文件失败: {url}")
                 return
 
             # 检测文件类型
             kind = filetype.guess(content)
-            is_video_content = False
-            
             if kind is None:
                 # 如果无法检测文件类型,尝试从URL获取
                 ext = os.path.splitext(filename)[1].lower()
                 if not ext:
-                    if is_video_url:
-                        # 如果URL看起来是视频但没扩展名，使用.mp4
-                        ext = ".mp4"
-                        is_video_content = True
-                        logger.info("根据URL判断为视频文件，使用.mp4扩展名")
-                    else:
-                        # 如果没有扩展名，使用默认扩展名
-                        ext = ".txt"
-                        logger.warning(f"无法识别文件类型，使用默认扩展名: {ext}")
-                elif ext in ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.mpeg', '.mpga', '.webm']:
-                    is_video_content = True
-                    logger.info(f"根据扩展名 {ext} 判断为视频文件")
+                    # 如果没有扩展名，使用默认扩展名
+                    ext = ".txt"
+                    logger.warning(f"无法识别文件类型，使用默认扩展名: {ext}")
             else:
                 ext = f".{kind.extension}"
-                # 检查MIME类型是否为视频
-                is_video_content = kind.mime.startswith('video/')
-                logger.info(f"检测到文件类型: {kind.mime}, 扩展名: {ext}, 是否视频: {is_video_content}")
+                logger.info(f"检测到文件类型: {kind.mime}, 扩展名: {ext}")
 
             # 确保文件名有扩展名
             if not os.path.splitext(filename)[1]:
                 filename = f"{filename}{ext}"
 
             # 根据文件类型发送不同类型的消息
-            # 优先判断是否是视频内容，确保视频文件被正确处理
-            if is_video_content or ext.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.mpeg', '.mpga', '.webm']:
-                logger.info(f"处理为视频文件: {filename}")
-                try:
-                    # 生成视频缩略图
-                    try:
-                        import tempfile
-                        import subprocess
-                        from PIL import Image
-                        
-                        # 创建临时文件
-                        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_video:
-                            temp_video.write(content)
-                            temp_video_path = temp_video.name
-                        
-                        # 创建缩略图临时文件
-                        thumb_path = temp_video_path + ".jpg"
-                        
-                        # 使用ffmpeg提取第一帧作为缩略图
-                        ffmpeg_cmd = f'ffmpeg -i "{temp_video_path}" -ss 00:00:01 -frames:v 1 "{thumb_path}" -y'
-                        logger.debug(f"执行ffmpeg命令: {ffmpeg_cmd}")
-                        subprocess.run(ffmpeg_cmd, shell=True, check=True, capture_output=True)
-                        
-                        # 读取缩略图
-                        thumb_data = None
-                        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
-                            with open(thumb_path, 'rb') as f:
-                                thumb_data = f.read()
-                            logger.info(f"成功生成视频缩略图，大小: {len(thumb_data)} 字节")
-                        
-                        # 清理临时文件
-                        try:
-                            os.unlink(temp_video_path)
-                            if os.path.exists(thumb_path):
-                                os.unlink(thumb_path)
-                        except Exception as e:
-                            logger.warning(f"清理临时文件失败: {e}")
-                        
-                        # 发送带缩略图的视频消息
-                        if thumb_data:
-                            await bot.send_video_message(message["FromWxid"], video=content, image=thumb_data)
-                        else:
-                            # 如果缩略图生成失败，使用默认方式发送
-                            await bot.send_video_message(message["FromWxid"], video=content, image="None")
-                    except Exception as thumb_error:
-                        logger.error(f"生成视频缩略图失败: {thumb_error}")
-                        # 缩略图生成失败，使用默认方式发送
-                        await bot.send_video_message(message["FromWxid"], video=content, image="None")
-                    
-                    logger.info(f"发送视频消息成功，文件名: {filename}, 大小: {len(content)} 字节")
-                except Exception as e:
-                    logger.error(f"发送视频消息失败: {e}")
-                    # 失败后尝试发送其他类型消息
-                    await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
-            elif ext.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']:
-                # 检查是否需要转换webp格式图片
-                if ext.lower() == '.webp':
-                    try:
-                        logger.info(f"检测到webp格式图片，尝试转换为jpg格式: {filename}")
-                        from PIL import Image, ImageFile
-                        ImageFile.LOAD_TRUNCATED_IMAGES = True
-                        
-                        # 打开webp图片
-                        img = Image.open(io.BytesIO(content))
-                        
-                        # 转换为RGB模式
-                        if img.mode in ('RGBA', 'LA', 'P'):
-                            logger.info(f"转换图片模式从 {img.mode} 到 RGB")
-                            background = Image.new('RGB', img.size, (255, 255, 255))
-                            if img.mode == 'P':
-                                img = img.convert('RGBA')
-                            background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-                            img = background
-                        elif img.mode != 'RGB':
-                            img = img.convert('RGB')
-                        
-                        # 保存为JPEG
-                        output = io.BytesIO()
-                        img.save(output, format='JPEG', quality=95, optimize=True)
-                        output.seek(0)
-                        content = output.getvalue()
-                        logger.info(f"webp转jpg成功，新大小: {len(content)} 字节")
-                    except Exception as e:
-                        logger.error(f"webp转jpg失败: {e}")
-                        logger.error(traceback.format_exc())
-                        # 继续使用原始数据
-                
+            if ext.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']:
                 await bot.send_image_message(message["FromWxid"], content)
                 logger.info(f"发送图片消息成功，文件名: {filename}, 大小: {len(content)} 字节")
             elif ext.lower() in ['.mp3', '.wav', '.ogg', '.m4a']:
                 await bot.send_voice_message(message["FromWxid"], voice=content, format=ext[1:])
                 logger.info(f"发送语音消息成功，文件名: {filename}, 大小: {len(content)} 字节")
+            elif ext.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.flv']:
+                await bot.send_video_message(message["FromWxid"], video=content, image="None")
+                logger.info(f"发送视频消息成功，文件名: {filename}, 大小: {len(content)} 字节")
             else:
                 # 其他类型文件，发送文件信息
                 await bot.send_text_message(message["FromWxid"], f"文件名: {filename}\n类型: {ext[1:]}\n大小: {len(content)/1024:.2f} KB")
@@ -3290,7 +2843,7 @@ class Dify(PluginBase):
             logger.error(traceback.format_exc())
 
     # 添加一个专门处理引用消息的方法
-    @on_xml_message(priority=99)  # 使用最高优先级确保最先处理
+    @on_xml_message(priority=20)  # 使用最高优先级确保最先处理
     async def handle_xml_quote(self, bot: WechatAPIClient, message: dict):
         """专门处理XML格式的引用消息"""
         if not self.enable:
@@ -3303,7 +2856,7 @@ class Dify(PluginBase):
 
         # 检查是否是引用消息
         if message.get("Quote"):
-            logger.info("Dify: 检测到XML引用消息")
+            logger.info("Dify: 检测到XML引用消息，直接处理")
 
             # 提取引用消息的详细信息
             quote_info = message.get("Quote", {})
@@ -3317,42 +2870,17 @@ class Dify(PluginBase):
 
             # 检查引用的消息是否包含图片
             image_md5 = None
-            image_aeskey = None
             if quoted_msg_type == 3:  # 图片消息
                 try:
-                    # 尝试从引用的图片消息中提取MD5和aeskey
-                    # 移除可能的发送者前缀，例如"chen0123CHEN:"
-                    xml_start = quoted_content.find("<?xml")
-                    if xml_start > 0:
-                        quoted_content = quoted_content[xml_start:]
-                        
+                    # 尝试从引用的图片消息中提取MD5
                     if "<?xml" in quoted_content and "<img" in quoted_content:
-                        try:
-                            root = ET.fromstring(quoted_content)
-                            img_element = root.find('img')
-                            if img_element is not None:
-                                image_md5 = img_element.get('md5')
-                                image_aeskey = img_element.get('aeskey') or img_element.get('cdnthumbaeskey')
-                                logger.info(f"从XML引用的图片消息中提取到MD5: {image_md5}, AESKey: {image_aeskey}")
-                            else:
-                                logger.warning(f"Dify: 在引用的XML消息中未找到img元素, MsgType: {quoted_msg_type}, Content: {quoted_content[:200]}")
-                                # 将md5和aeskey设为None，后续逻辑会当作普通消息处理
-                                image_md5 = None
-                                image_aeskey = None
-                        except ET.ParseError as xml_error:
-                            logger.error(f"解析XML失败: {xml_error}")
-                            # 尝试使用正则表达式提取图片信息
-                            import re
-                            md5_match = re.search(r'md5="([^"]+)"', quoted_content)
-                            aeskey_match = re.search(r'aeskey="([^"]+)"', quoted_content)
-                            if md5_match:
-                                image_md5 = md5_match.group(1)
-                            if aeskey_match:
-                                image_aeskey = aeskey_match.group(1)
-                            if image_md5 or image_aeskey:
-                                logger.info(f"使用正则表达式从引用内容中提取到MD5: {image_md5}, AESKey: {image_aeskey}")
+                        root = ET.fromstring(quoted_content)
+                        img_element = root.find('img')
+                        if img_element is not None:
+                            image_md5 = img_element.get('md5')
+                            logger.info(f"从XML引用的图片消息中提取到MD5: {image_md5}")
                 except Exception as e:
-                    logger.error(f"解析XML引用图片消息失败: {e}")
+                    logger.error(f"解析XML引用图片消息XML失败: {e}")
 
             # 获取消息内容
             content = message.get("Content", "")
@@ -3372,25 +2900,24 @@ class Dify(PluginBase):
                     is_at_bot = True
                     break
 
-                # 检查是否是特殊格式（包含机器人名称但不一定有@符号）
-                if robot_name in content and (content.startswith('@') or ' @' in content):
-                    logger.info(f"XML引用消息内容包含机器人名称和@符号: {robot_name}")
-                    is_at_bot = True
-                    break
+            # 如果直接检查没有发现@，使用增强的is_at_message方法
+            if not is_at_bot:
+                is_at_bot = self.is_at_message(message)
 
-            # 检查是否应该处理此引用消息
-            should_process = self.should_process_quote_message(message, content, quote_info)
-
-            if should_process:
-                logger.info(f"Dify: XML引用消息满足处理条件，开始处理...")
+            if is_at_bot:
+                logger.info("Dify: XML引用消息中@了机器人，处理该消息")
 
                 # 如果有图片MD5，添加到消息中
                 if image_md5:
                     message["ImageMD5"] = image_md5
                     logger.info(f"将图片MD5 {image_md5} 添加到消息中")
 
-                # 标记消息为已处理 - 确保在实际处理时才标记
+                # 标记消息为已处理
                 self.mark_message_processed(message)
+
+                # 直接调用引用消息处理方法，但不使用handle_quote方法
+                # 因为handle_quote方法会再次标记消息为已处理
+                # 而是直接处理消息
 
                 # 检查是否有唤醒词或触发词
                 content = message.get("Content", "").strip()
@@ -3417,18 +2944,13 @@ class Dify(PluginBase):
                     model_name = next((name for name, config in self.models.items() if config == model), '未知')
                     logger.error(f"所选模型 '{model_name}' 的API密钥未配置")
                     if message.get("IsGroup"):
-                        await bot.send_at_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！", [user_wxid])
+                        await bot.send_at_message(message["FromWxid"], "此模型API密钥未配置，请联系管理员", [user_wxid])
                     else:
-                        await bot.send_text_message(message["FromWxid"], "抱歉，ai助手遇到一点问题，请稍后重试！")
+                        await bot.send_text_message(message["FromWxid"], "此模型API密钥未配置，请联系管理员")
                     return False
 
                 # 检查是否有图片
                 files = []
-                
-                # 图片处理 - 优先尝试从image_md5和image_aeskey获取
-                has_image = False
-                
-                # 尝试方法1：根据MD5查找图片
                 if image_md5:
                     try:
                         logger.info(f"尝试根据MD5查找图片: {image_md5}")
@@ -3437,153 +2959,28 @@ class Dify(PluginBase):
                             logger.info(f"根据MD5找到图片，大小: {len(image_content)} 字节")
                             file_id = await self.upload_file_to_dify(
                                 image_content,
-                                f"image_{int(time.time())}.jpg",
+                                f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
                                 "image/jpeg",
                                 message["FromWxid"],
                                 model_config=model
                             )
                             if file_id:
-                                logger.info(f"MD5方法上传图片成功，文件ID: {file_id}")
+                                logger.info(f"引用图片上传成功，文件ID: {file_id}")
                                 files = [file_id]
-                                has_image = True
                             else:
-                                logger.error("MD5方法上传图片失败")
+                                logger.error("引用图片上传失败")
                         else:
                             logger.warning(f"未找到MD5为 {image_md5} 的图片")
                     except Exception as e:
-                        logger.error(f"MD5方法处理图片失败: {e}")
-                
-                # 尝试方法2：使用aeskey下载图片
-                if not has_image and image_aeskey:
-                    try:
-                        logger.info(f"尝试使用AESKey下载图片: {image_aeskey}")
-                        # 提取URL或使用默认URL
-                        cdn_url = None
-                        try:
-                            # 尝试从XML内容中提取cdnmidimgurl
-                            import re
-                            url_match = re.search(r'cdnmidimgurl="([^"]+)"', str(quoted_content))
-                            if url_match:
-                                cdn_url = url_match.group(1)
-                                logger.info(f"从引用内容中提取到URL: {cdn_url}")
-                        except Exception as e:
-                            logger.error(f"提取URL失败: {e}")
-                            
-                        # 使用bot的download_image方法下载图片
-                        try:
-                            if hasattr(bot, 'download_image'):
-                                image_content = await bot.download_image(image_aeskey, cdn_url)
-                                if isinstance(image_content, str):
-                                    # 可能是base64编码，尝试解码
-                                    import base64
-                                    try:
-                                        image_content = base64.b64decode(image_content)
-                                    except:
-                                        logger.error("Base64解码失败")
-                                        image_content = None
-                                
-                                if image_content and len(image_content) > 0:
-                                    logger.info(f"使用AESKey下载图片成功，大小: {len(image_content)} 字节")
-                                    file_id = await self.upload_file_to_dify(
-                                        image_content,
-                                        f"image_{int(time.time())}.jpg",
-                                        "image/jpeg",
-                                        message["FromWxid"],
-                                        model_config=model
-                                    )
-                                    if file_id:
-                                        logger.info(f"AESKey方法上传图片成功，文件ID: {file_id}")
-                                        files = [file_id]
-                                        has_image = True
-                                    else:
-                                        logger.error("AESKey方法上传图片失败")
-                                else:
-                                    logger.warning("AESKey下载图片失败或内容为空")
-                            else:
-                                logger.warning("bot实例没有download_image方法")
-                        except Exception as e:
-                            logger.error(f"使用AESKey下载图片失败: {e}")
-                    except Exception as e:
-                        logger.error(f"AESKey方法处理图片失败: {e}")
-                
-                # 尝试方法3：检查最近缓存的图片
-                if not has_image:
-                    try:
-                        logger.info("尝试获取最近缓存的图片")
-                        image_content = await self.get_cached_image(message["FromWxid"])
-                        if image_content:
-                            logger.info(f"获取到缓存图片，大小: {len(image_content)} 字节")
-                            file_id = await self.upload_file_to_dify(
-                                image_content,
-                                f"image_{int(time.time())}.jpg",
-                                "image/jpeg",
-                                message["FromWxid"],
-                                model_config=model
-                            )
-                            if file_id:
-                                logger.info(f"缓存方法上传图片成功，文件ID: {file_id}")
-                                files = [file_id]
-                                has_image = True
-                            else:
-                                logger.error("缓存方法上传图片失败")
-                        else:
-                            logger.warning("未找到缓存图片")
-                    except Exception as e:
-                        logger.error(f"缓存方法处理图片失败: {e}")
-                        
-                if not has_image and (image_md5 or image_aeskey or quoted_msg_type == 3):
-                    logger.warning("所有尝试获取图片的方法都失败了")
+                        logger.error(f"处理引用图片失败: {e}")
 
                 # 如果没有内容，则使用引用的内容或默认提示
                 if not content or content.strip() == "":
                     # 如果是图片消息，使用特殊提示
                     if image_md5 or quoted_msg_type == 3:
                         processed_query = f"请分析这张图片"
-                        logger.info("XML引用消息为图片，使用'请分析这张图片'作为查询内容")
-                    else:
-                        # 先检查引用内容是否为空
-                        if quoted_content and quoted_content.strip():
-                            processed_query = f"请回复这条消息: '{quoted_content}'"
-                            logger.info(f"XML引用消息内容为空，使用引用内容作为查询: {processed_query[:50]}...")
-                        else:
-                            # 如果引用内容也为空，使用默认提示
-                            processed_query = "请分析我引用的这条消息"
-                            logger.info("XML引用消息和引用内容均为空，使用默认提示")
-
-                # 处理查询内容，去除可能的@前缀
-                if content.startswith('@'):
-                    # 先检查是否是@机器人
-                    at_bot_prefix = None
-                    for robot_name in self.robot_names:
-                        if content.startswith(f'@{robot_name}'):
-                            at_bot_prefix = f'@{robot_name}'
-                            break
-
-                    if at_bot_prefix:
-                        # 如果是@机器人，移除@机器人部分
-                        processed_query = content[len(at_bot_prefix):].strip()
-                        logger.debug(f"移除@{at_bot_prefix}后的查询内容: {processed_query}")
-                    else:
-                        # 如果不是@机器人，则尝试找第一个空格
-                        space_index = content.find(' ')
-                        if space_index > 0:
-                            # 保留第一个空格后面的所有内容
-                            processed_query = content[space_index+1:].strip()
-                            logger.debug(f"移除@前缀后的查询内容: {processed_query}")
-
-                # 最终处理查询，如果处理后为空，使用默认提示
-                if not processed_query or processed_query.strip() == "":
-                    if image_md5 or quoted_msg_type == 3:
-                        processed_query = f"请分析这张图片"
                     else:
                         processed_query = f"请回复这条消息: '{quoted_content}'"
-                    logger.info(f"处理后的查询内容为空，使用默认提示: {processed_query[:50]}...")
-                # 添加引用内容到查询中，确保AI了解引用的上下文
-                elif quoted_content and quoted_content.strip():
-                    # 如果查询中已经包含引用内容，则不再添加
-                    if quoted_content not in processed_query:
-                        processed_query = f"{processed_query} (引用消息: '{quoted_content}')"
-                        logger.info(f"将引用内容添加到查询中: {processed_query[:100]}...")
 
                 if await self._check_point(bot, message, model):
                     logger.info(f"XML引用消息使用模型 '{next((name for name, config in self.models.items() if config == model), '未知')}' 处理请求")
@@ -3599,7 +2996,7 @@ class Dify(PluginBase):
         # 不是引用消息，交给下一个处理器处理
         return True
 
-    @on_xml_message(priority=98)  # 使用高优先级确保先处理
+    @on_xml_message(priority=20)  # 使用高优先级确保先处理
     async def handle_xml_file(self, bot: WechatAPIClient, message: dict):
         """处理XML格式的文件消息"""
         if not self.enable:
@@ -3660,9 +3057,13 @@ class Dify(PluginBase):
                 logger.info(f"Dify: 开始分段下载文件，总大小: {total_len} 字节，分 {chunks} 段下载")
 
                 # 尝试两个不同的API端点
+                config_manager = ConfigManager()
+                app_config = config_manager.config
+                api_host = app_config.wechat_api.host
+                api_port = app_config.wechat_api.port
                 urls = [
-                    f'http://127.0.0.1:9011/api/Tools/DownloadFile',
-                    f'http://127.0.0.1:9011/VXAPI/Tools/DownloadFile'
+                    f'http://{api_host}:{api_port}/api/Tools/DownloadFile',
+                    f'http://{api_host}:{api_port}/VXAPI/Tools/DownloadFile'
                 ]
 
                 download_success = False
@@ -4050,28 +3451,28 @@ class Dify(PluginBase):
                                     logger.info(f"文件下载成功，大小: {len(file_content)} 字节")
                                 else:
                                     logger.error("文件下载失败或内容为空")
-                                    await bot.send_text_message(from_wxid, "抱歉，ai助手遇到一点问题，请稍后重试！")
+                                    await bot.send_text_message(from_wxid, "文件下载失败，请重新发送。")
                                     return
                             else:
                                 logger.error("XML中缺少必要的附件ID")
-                                await bot.send_text_message(from_wxid, "抱歉，ai助手遇到一点问题，请稍后重试！")
+                                await bot.send_text_message(from_wxid, "无法解析文件信息，请重新发送。")
                                 return
                         else:
                             logger.error("XML中缺少appattach节点")
-                            await bot.send_text_message(from_wxid, "抱歉，ai助手遇到一点问题，请稍后重试！")
+                            await bot.send_text_message(from_wxid, "无法解析文件信息，请重新发送。")
                             return
                     else:
                         logger.error("XML格式不正确，无法解析appmsg节点")
-                        await bot.send_text_message(from_wxid, "抱歉，ai助手遇到一点问题，请稍后重试！")
+                        await bot.send_text_message(from_wxid, "无法解析文件信息，请重新发送。")
                         return
                 except Exception as e:
                     logger.error(f"解析XML或下载文件失败: {e}")
                     logger.error(traceback.format_exc())
-                    await bot.send_text_message(from_wxid, "抱歉，ai助手遇到一点问题，请稍后重试！")
+                    await bot.send_text_message(from_wxid, f"处理文件失败: {str(e)}")
                     return
             else:
                 logger.warning(f"文件内容格式不支持: {type(file_content)}")
-                await bot.send_text_message(from_wxid, "抱歉，ai助手遇到一点问题，请稍后重试！")
+                await bot.send_text_message(from_wxid, "不支持的文件格式，请重新发送。")
                 return
 
             # 缓存文件
@@ -4089,123 +3490,18 @@ class Dify(PluginBase):
 
     async def send_quote_message(self, bot: WechatAPIClient, to_wxid: str, content: str, quoted_msg_id: str,
                               quoted_wxid: str, quoted_nickname: str, quoted_content: str):
-        """发送引用消息"""
+        """
+        发送引用消息 - 现在直接发送普通文本消息
+
+        参数:
+            bot: WechatAPIClient实例
+            to_wxid: 消息接收人的wxid
+            content: 要发送的新消息内容
+            quoted_msg_id: 被引用消息的newMsgId (不再使用)
+            quoted_wxid: 被引用消息发送者的wxid (不再使用)
+            quoted_nickname: 被引用消息发送者的昵称 (不再使用)
+            quoted_content: 被引用的消息内容 (不再使用)
+        """
         # 直接发送普通文本消息，不使用引用格式
         logger.info(f"发送普通文本消息，内容: {content[:30]}...")
         return await bot.send_text_message(to_wxid, content)
-
-    async def send_app_message(self, bot: WechatAPIClient, to_wxid: str, xml: str, type: int = 49) -> tuple[str, int, int]:
-        """发送应用消息（卡片消息）
-
-        Args:
-            bot (WechatAPIClient): 微信API客户端实例
-            to_wxid (str): 接收人wxid
-            xml (str): 应用消息的xml内容
-            type (int, optional): 应用消息类型，默认为49（卡片消息）
-
-        Returns:
-            tuple[str, int, int]: 返回(ClientMsgid, CreateTime, NewMsgId)
-
-        Raises:
-            Exception: 发送失败时抛出异常
-
-        使用示例:
-            xml_content = '''<appmsg>
-                <title>卡片标题</title>
-                <des>卡片描述</des>
-                <url>https://example.com</url>
-                <thumburl>https://example.com/thumb.jpg</thumburl>
-            </appmsg>'''
-            await plugin.send_app_message(bot, "接收者wxid", xml_content)
-        """
-        try:
-            # 使用bot的send_app_message方法发送消息
-            client_msg_id, create_time, new_msg_id = await bot.send_app_message(to_wxid, xml, type)
-            logger.info(f"发送应用消息成功: 接收人={to_wxid}, 类型={type}")
-            return client_msg_id, create_time, new_msg_id
-        except Exception as e:
-            logger.error(f"发送应用消息失败: {e}")
-            raise
-
-    def _load_cache_index(self):
-        """加载缓存索引文件"""
-        try:
-            if os.path.exists(self.cache_index_file):
-                with open(self.cache_index_file, 'r', encoding='utf-8') as f:
-                    cache_index = json.load(f)
-                
-                # 加载图片缓存索引
-                if 'image_cache' in cache_index:
-                    for user_id, cache_info in cache_index['image_cache'].items():
-                        file_path = os.path.join(self.image_cache_dir, cache_info['file_name'])
-                        if os.path.exists(file_path):
-                            self.image_cache[user_id] = {
-                                'timestamp': cache_info['timestamp'],
-                                'file_name': cache_info['file_name'],
-                                'md5': cache_info.get('md5')
-                            }
-                
-                # 加载文件缓存索引
-                if 'file_cache' in cache_index:
-                    for user_id, cache_info in cache_index['file_cache'].items():
-                        file_path = os.path.join(self.file_cache_dir, cache_info['file_name'])
-                        if os.path.exists(file_path):
-                            self.file_cache[user_id] = {
-                                'timestamp': cache_info['timestamp'],
-                                'name': cache_info['name'],
-                                'mime_type': cache_info['mime_type'],
-                                'file_name': cache_info['file_name']
-                            }
-                
-                logger.info(f"成功加载缓存索引: {len(self.image_cache)}个图片缓存, {len(self.file_cache)}个文件缓存")
-            else:
-                logger.info("缓存索引文件不存在，将创建新的缓存索引")
-        except Exception as e:
-            logger.error(f"加载缓存索引失败: {e}")
-            logger.error(traceback.format_exc())
-    
-    def _save_cache_index(self):
-        """保存缓存索引到文件"""
-        if not self.persistent_cache:
-            return
-            
-        try:
-            # 构建缓存索引
-            cache_index = {
-                'image_cache': {},
-                'file_cache': {}
-            }
-            
-            # 添加图片缓存索引
-            for user_id, cache_info in self.image_cache.items():
-                # 跳过没有文件名的缓存项
-                if 'file_name' not in cache_info:
-                    continue
-                    
-                cache_index['image_cache'][user_id] = {
-                    'timestamp': cache_info['timestamp'],
-                    'file_name': cache_info['file_name'],
-                    'md5': cache_info.get('md5')
-                }
-            
-            # 添加文件缓存索引
-            for user_id, cache_info in self.file_cache.items():
-                # 跳过没有文件名的缓存项
-                if 'file_name' not in cache_info:
-                    continue
-                    
-                cache_index['file_cache'][user_id] = {
-                    'timestamp': cache_info['timestamp'],
-                    'name': cache_info['name'],
-                    'mime_type': cache_info['mime_type'],
-                    'file_name': cache_info['file_name']
-                }
-            
-            # 保存到文件
-            with open(self.cache_index_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_index, f, ensure_ascii=False, indent=2)
-                
-            logger.debug(f"成功保存缓存索引: {len(cache_index['image_cache'])}个图片缓存, {len(cache_index['file_cache'])}个文件缓存")
-        except Exception as e:
-            logger.error(f"保存缓存索引失败: {e}")
-            logger.error(traceback.format_exc())
