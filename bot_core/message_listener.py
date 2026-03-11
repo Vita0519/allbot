@@ -366,7 +366,7 @@ class MessageListener:
                             bot = getattr(self.xybot, "bot", None)
                             while True:
                                 try:
-                                    if bot is not None and await bot.is_logged_in(getattr(bot, "wxid", None) or None):
+                                    if bot is not None and await bot.is_logged_in(None):
                                         try:
                                             from bot_core.status_manager import update_bot_status
 

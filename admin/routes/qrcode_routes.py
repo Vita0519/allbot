@@ -357,8 +357,12 @@ def register_qrcode_routes(app, templates):
             if qrcode_proxy:
                 setattr(wxapi, "login_qrcode_proxy", qrcode_proxy)
 
-            current_wxid = str(getattr(wxapi, "wxid", "") or "").strip() or None
-            if await wxapi.is_logged_in(current_wxid):
+            if hasattr(wxapi, "try_wakeup_login"):
+                try:
+                    await wxapi.try_wakeup_login()
+                except Exception:
+                    pass
+            if await wxapi.is_logged_in(None):
                 if hasattr(wxapi, "get_profile"):
                     await wxapi.get_profile()
                 status_data = await _save_online_status(wxapi)
