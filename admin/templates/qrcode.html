@@ -588,7 +588,10 @@
                     body: JSON.stringify({})
                 });
                 const data = await response.json();
-                if (data && data.success && data.data && data.data.qrcode_url) {
+                if (data && data.success && data.data && data.data.status === 'online') {
+                    updateQRCodeStatus(data.message || '已在线，无需切换');
+                    showLoginSuccess();
+                } else if (data && data.success && data.data && data.data.qrcode_url) {
                     qrcodeUrl = data.data.qrcode_url;
                     currentQRCodeUuid = data.data.uuid || currentQRCodeUuid;
                     currentLoginMode = 'mac';

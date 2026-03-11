@@ -255,6 +255,23 @@ def register_qrcode_routes(app, templates):
             if not hasattr(wxapi, "get_qr_code"):
                 return JSONResponse(status_code=400, content={"success": False, "error": "当前客户端不支持拉取二维码"})
 
+            current_wxid = str(getattr(wxapi, "wxid", "") or "").strip() or None
+            if await wxapi.is_logged_in(current_wxid):
+                if hasattr(wxapi, "get_profile"):
+                    await wxapi.get_profile()
+                status_data = await _save_online_status(wxapi, detail="当前已在线，无需切换 mac 拉码")
+                return {
+                    "success": True,
+                    "data": {
+                        "status": "online",
+                        "wxid": status_data.get("wxid", ""),
+                        "nickname": status_data.get("nickname", ""),
+                        "alias": status_data.get("alias", ""),
+                        "login_mode": status_data.get("login_mode", ""),
+                    },
+                    "message": "当前已在线，无需切换 mac 拉码",
+                }
+
             device_id = str(getattr(wxapi, "device_id", "") or "").strip()
             if not device_id and hasattr(wxapi, "create_device_id"):
                 device_id = str(wxapi.create_device_id()).strip()
