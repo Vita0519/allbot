@@ -20,6 +20,11 @@ from loguru import logger
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+# 确保项目根目录在模块搜索路径中（兼容容器/子目录启动）
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from adapter.loader import start_adapters
 
 # 修改导入语句，确保导入正确的bot_core模块
