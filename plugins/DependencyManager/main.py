@@ -1,9 +1,16 @@
 """
+@input: WechatAPIClient 消息回调、插件配置、插件市场 API
+@output: 依赖/插件安装与插件市场查询响应；插件市场缓存落盘
+@position: 插件管理辅助能力（依赖安装、插件安装、插件市场查询）
+@auto-doc: Update header and folder INDEX.md when this file changes
+
 依赖包管理插件 - 允许管理员通过微信命令安装Python依赖包和Github插件
 
 作者: 老夏的金库
 版本: 1.0.0
 """
+import asyncio
+import json
 import os
 import sys
 import subprocess
@@ -17,6 +24,7 @@ from loguru import logger
 import requests
 import zipfile
 import io
+from datetime import datetime
 
 from WechatAPI import WechatAPIClient
 from utils.decorators import *
@@ -47,6 +55,12 @@ class DependencyManager(PluginBase):
         # 插件目录就是根目录本身
         self.plugins_dir = self.root_dir
         logger.critical(f"[DependencyManager] 插件目录设置为: {self.plugins_dir}")
+
+        # 插件市场配置（默认值，可被 config.toml 覆盖）
+        self.market_query_cmd = "插件查询"
+        self.market_page_size = 5
+        self.market_cache_path = os.path.join(self.plugin_dir, "plugin_market_cache.json")
+        self.market_cache_timeout_seconds = 3600
         
         # 加载配置
         self.load_config()
@@ -80,6 +94,7 @@ class DependencyManager(PluginBase):
             
             # 读取插件安装配置 - 使用唤醒词
             self.github_install_prefix = cmd_config.get("github_install", "github")
+            self.market_query_cmd = cmd_config.get("market_query", "插件查询")
             
             logger.critical(f"[DependencyManager] 配置加载成功")
             logger.critical(f"[DependencyManager] 启用状态: {self.enable}")
@@ -97,6 +112,7 @@ class DependencyManager(PluginBase):
             self.list_cmd = "!pip list"
             self.uninstall_cmd = "!pip uninstall"
             self.github_install_prefix = "github"
+            self.market_query_cmd = "插件查询"
     
     def load_github_proxy(self):
         """加载主配置中的 GitHub 反代设置"""
@@ -117,6 +133,178 @@ class DependencyManager(PluginBase):
         except Exception as e:
             logger.error(f"[DependencyManager] 加载主配置失败: {str(e)}")
             self.github_proxy = ""
+
+    def _plugin_market_base_urls(self) -> list:
+        env_value = os.environ.get("PLUGIN_MARKET_BASE_URLS", "").strip()
+        base_urls = []
+        if env_value:
+            for item in env_value.split(","):
+                url = item.strip()
+                if url:
+                    base_urls.append(url)
+        else:
+            single_url = os.environ.get("PLUGIN_MARKET_BASE_URL", "").strip()
+            if single_url:
+                base_urls.append(single_url)
+            else:
+                base_urls = [
+                    "http://v.sxkiss.top",
+                    "http://xianan.xin:1562/api",
+                ]
+
+        deduped = []
+        seen = set()
+        for url in base_urls:
+            if url in seen:
+                continue
+            seen.add(url)
+            deduped.append(url)
+        return deduped
+
+    def _build_market_url(self, base_url: str, path: str) -> str:
+        base = (base_url or "").rstrip("/")
+        if not path.startswith("/"):
+            path = "/" + path
+        return f"{base}{path}"
+
+    def _normalize_market_plugin(self, raw_plugin: dict) -> dict:
+        if not isinstance(raw_plugin, dict):
+            return {}
+        return {
+            "name": raw_plugin.get("name") or "Unknown Plugin",
+            "description": raw_plugin.get("description") or "",
+            "author": raw_plugin.get("author") or "未知作者",
+            "github_url": raw_plugin.get("github_url") or raw_plugin.get("github") or "",
+        }
+
+    def _load_market_cache(self) -> dict:
+        if not os.path.exists(self.market_cache_path):
+            return {}
+        try:
+            with open(self.market_cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.error(f"[DependencyManager] 读取插件市场缓存失败: {e}")
+            return {}
+
+    def _write_market_cache(self, plugins: list):
+        payload = {
+            "plugins": plugins,
+            "cached_at": datetime.now().isoformat(),
+        }
+        try:
+            with open(self.market_cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[DependencyManager] 写入插件市场缓存失败: {e}")
+
+    def _is_cache_fresh(self, cached_at: str) -> bool:
+        if not cached_at:
+            return False
+        try:
+            cached_time = datetime.fromisoformat(cached_at)
+        except Exception:
+            return False
+        return (datetime.now() - cached_time).total_seconds() <= self.market_cache_timeout_seconds
+
+    def _fetch_market_plugins(self) -> list:
+        base_urls = self._plugin_market_base_urls()
+        if not base_urls:
+            return []
+
+        all_plugins = []
+        headers = {
+            "User-Agent": "XYBot/DependencyManager",
+        }
+        for base_url in base_urls:
+            url = self._build_market_url(base_url, "/plugins/?status=approved")
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                if response.status_code != 200:
+                    logger.warning(f"[DependencyManager] 获取插件市场失败: {response.status_code} - {url}")
+                    continue
+                data = response.json()
+            except Exception as e:
+                logger.warning(f"[DependencyManager] 获取插件市场异常: {e}")
+                continue
+
+            if isinstance(data, dict):
+                plugins = data.get("plugins", [])
+            elif isinstance(data, list):
+                plugins = data
+            else:
+                plugins = []
+
+            for plugin in plugins:
+                normalized = self._normalize_market_plugin(plugin)
+                if normalized:
+                    all_plugins.append(normalized)
+
+        return all_plugins
+
+    async def _sync_market_cache(self):
+        plugins = await asyncio.to_thread(self._fetch_market_plugins)
+        if plugins:
+            self._write_market_cache(plugins)
+            logger.info(f"[DependencyManager] 插件市场缓存更新成功，共 {len(plugins)} 个插件")
+        else:
+            logger.warning("[DependencyManager] 插件市场缓存更新失败或为空")
+
+    @schedule("interval", minutes=30)
+    async def _scheduled_market_cache(self, bot=None):
+        if not self.enable:
+            return
+        await self._sync_market_cache()
+
+    async def async_init(self):
+        if not self.enable:
+            return
+        await self._sync_market_cache()
+        return
+
+    def _build_install_help_text(self) -> str:
+        return (
+            "安装方法：\n"
+            f"1. `{self.github_install_prefix} 用户名/仓库名`\n"
+            f"2. `{self.github_install_prefix} https://github.com/用户名/仓库名.git`\n"
+            "提示：安装后需要重启机器人加载插件。\n"
+        )
+
+    def _format_market_page(self, plugins: list, page: int) -> str:
+        if page < 1:
+            page = 1
+        total = len(plugins)
+        page_size = self.market_page_size
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        if page > total_pages:
+            page = total_pages
+
+        start = (page - 1) * page_size
+        end = start + page_size
+        items = plugins[start:end]
+
+        lines = [
+            self._build_install_help_text().strip(),
+            f"插件查询 第{page}页/共{total_pages}页（每页{page_size}个）",
+        ]
+
+        if not items:
+            lines.append("暂无插件数据。")
+            return "\n".join(lines)
+
+        index = start + 1
+        for plugin in items:
+            name = plugin.get("name") or "Unknown Plugin"
+            description = plugin.get("description") or ""
+            author = plugin.get("author") or "未知作者"
+            github_url = plugin.get("github_url") or ""
+            lines.append(
+                f"{index}. 插件名：{name} | 插件介绍：{description} | 作者：{author} | 地址：{github_url}"
+            )
+            index += 1
+
+        return "\n".join(lines)
     
     def _build_github_url(self, github_url: str) -> str:
         """
@@ -201,6 +389,30 @@ class DependencyManager(PluginBase):
             await bot.send_text_message(conversation_id, "🔄 正在安装GeminiImage插件...")
             await self._handle_github_install(bot, conversation_id, "https://github.moeyy.xyz/https://github.com/NanSsye/GeminiImage.git")
             logger.info("[DependencyManager] GeminiImage快捷安装完成，阻止后续插件处理")
+            return False
+
+        # 2.5 插件市场查询命令（插件查询）
+        if content.startswith(self.market_query_cmd):
+            args = content.replace(self.market_query_cmd, "", 1).strip()
+            page = 1
+            if args:
+                try:
+                    page = int(args.split()[0])
+                except Exception:
+                    page = 1
+
+            cache = self._load_market_cache()
+            plugins = cache.get("plugins", []) if isinstance(cache, dict) else []
+            cached_at = cache.get("cached_at") if isinstance(cache, dict) else ""
+
+            if not plugins or not self._is_cache_fresh(cached_at):
+                await self._sync_market_cache()
+                cache = self._load_market_cache()
+                plugins = cache.get("plugins", []) if isinstance(cache, dict) else []
+
+            message = self._format_market_page(plugins, page)
+            await bot.send_text_message(conversation_id, message)
+            logger.info("[DependencyManager] 插件查询命令处理完成")
             return False
             
         # 2.3 GitHub帮助命令

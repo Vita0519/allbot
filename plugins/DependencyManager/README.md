@@ -46,6 +46,18 @@ github allbot
 github help
 ```
 
+### 插件市场查询
+
+每页固定返回 5 个插件（分页）：
+
+```
+插件查询 1
+```
+
+```
+插件查询 2
+```
+
 ### 安装包
 
 安装最新版本的包：
@@ -123,6 +135,8 @@ list = "!pip list"
 uninstall = "!pip uninstall"
 # GitHub插件安装命令前缀
 github_install = "github" 
+# 插件市场查询命令前缀（分页：插件查询 1 / 插件查询 2 ...）
+market_query = "插件查询"
 ```
 
 ### 安全设置说明
